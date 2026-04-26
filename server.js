@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 // server.js – AI backend for Render (explicit CORS)
 const express = require("express");
 const cors = require("cors");
@@ -58,10 +57,6 @@ function extractJSON(text) {
   }
 }
 
-/* ============================
-   POST /chat – Build / Edit
-   (max 30 seconds allowed)
-============================ */
 app.post("/chat", async (req, res) => {
   try {
     const { messages, mode = "edit", sandboxHTML = "" } = req.body;
@@ -182,8 +177,7 @@ app.post("/ask", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`AI backend running on port ${PORT}`));
-=======
-// server.js
+
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -238,4 +232,3 @@ app.post("/ask", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`AI backend running on port ${PORT}`));
->>>>>>> 8f7f1e1478fe0ee79fa5ac636e00fb55698513e1
