@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Generate & Edit Builder</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: system-ui, sans-serif;
+        background: #1e1f22;
+        color: #e1e1e1;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      header {
+        background: #161719;
+        padding: 10px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+      }
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .header-left span {
+        font-weight: 600;
+        color: #fff;
+        font-size: 1rem;
+      }
+      .header-hint {
+        color: #b9bbbe;
+        font-size: 0.8rem;
+      }
+      .mode-selector {
+        display: flex;
+        background: #2b2d31;
+        border-radius: 20px;
+        overflow: hidden;
+        border: 1px solid #3a3c42;
+      }
+      .mode-btn {
+        padding: 5px 15px;
+        border: none;
+        background: transparent;
+        color: #ccc;
+        cursor: pointer;
+        font-size: 0.8rem;
+        font-weight: 500;
+        transition: all 0.2s;
+        white-space: nowrap;
+      }
+      .mode-btn.active {
+        background: #007bff;
+        color: white;
+      }
+      .mode-btn:hover:not(.active) {
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .main-area {
+        flex: 1;
+        display: flex;
+        overflow: hidden;
+        min-height: 0;
+      }
+      .sandbox-wrapper {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        background: #2b2d31;
+        border-right: 1px solid #3a3c42;
+        overflow: hidden;
+        position: relative;
+      }
+      .sandbox-label {
+        padding: 6px 14px;
+        background: #202225;
+        font-size: 0.8rem;
+        color: #b9bbbe;
+        border-bottom: 1px solid #3a3c42;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      #sandbox {
+        flex: 1;
+        background: #ffffff;
+        margin: 6px;
+        border: 1px solid #3a3c42;
+        border-radius: 8px;
+        position: relative;
+        overflow: auto;
+      }
+      #sandbox iframe {
+        width: 100%;
+        height: 100%;
+        border: none;
+      }
+
+      /* Loading Overlay */
+      .loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(4px);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 20;
+        flex-direction: column;
+      }
+      .loading-box {
+        background: #1e1f22;
+        color: white;
+        padding: 18px 30px;
+        border-radius: 10px;
+        text-align: center;
+        font-size: 1rem;
+        font-weight: 500;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      }
+      .loading-dots {
+        display: inline-block;
+        width: 1.2em;
+        text-align: left;
+      }
+      .loading-dots::after {
+        content: "";
+        animation: dots 1.5s steps(4, end) infinite;
+      }
+      @keyframes dots {
+        0% {
+          content: "";
+        }
+        25% {
+          content: ".";
+        }
+        50% {
+          content: "..";
+        }
+        75% {
+          content: "...";
+        }
+        100% {
+          content: "";
+        }
+      }
+
+      /* Chatbot panel (desktop) */
+      .chatbot-panel {
+        width: 300px;
+        background: #202225;
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid #3a3c42;
+        flex-shrink: 0;
+      }
+      .chatbot-header {
+        padding: 10px 14px;
+        background: #161719;
+        color: white;
+        font-weight: 600;
+        font-size: 0.9rem;
+      }
+      .chat-messages {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        background: #2b2d31;
+      }
+      .chat-msg {
+        max-width: 85%;
+        padding: 6px 10px;
+        border-radius: 14px;
+        font-size: 0.85rem;
+        line-height: 1.35;
+        word-break: break-word;
+      }
+      .chat-msg.user {
+        align-self: flex-end;
+        background: #007bff;
+        color: white;
+      }
+      .chat-msg.assistant {
+        align-self: flex-start;
+        background: #40444b;
+        color: #dcddde;
+      }
+      .chat-input-area {
+        display: flex;
+        padding: 6px;
+        border-top: 1px solid #3a3c42;
+        background: #202225;
+      }
+      #chat-input {
+        flex: 1;
+        padding: 7px 12px;
+        border: 1px solid #3a3c42;
+        border-radius: 18px;
+        outline: none;
+        font-size: 0.85rem;
+        background: #2b2d31;
+        color: #e1e1e1;
+      }
+      #chat-send-btn {
+        margin-left: 4px;
+        padding: 7px 14px;
+        background: #007bff;
+        color: white;
+        border: none;
+        border-radius: 18px;
+        cursor: pointer;
+        font-size: 0.85rem;
+      }
+
+      .bottom-bar {
+        background: #161719;
+        border-top: 1px solid #3a3c42;
+        padding: 8px 16px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-shrink: 0;
+      }
+      .log-area {
+        max-height: 50px;
+        overflow-y: auto;
+        flex: 1;
+        font-size: 0.75rem;
+        color: #b9bbbe;
+        padding-right: 6px;
+      }
+      .log-entry {
+        padding: 1px 0;
+        border-bottom: 1px solid #2b2d31;
+      }
+      .log-entry.error {
+        color: #f04747;
+      }
+      #command-input {
+        flex: 3;
+        padding: 8px 14px;
+        border: 1px solid #3a3c42;
+        border-radius: 22px;
+        font-size: 0.9rem;
+        outline: none;
+        background: #2b2d31;
+        color: #e1e1e1;
+      }
+      #send-btn,
+      #clear-btn,
+      #download-btn {
+        padding: 8px 18px;
+        border: none;
+        border-radius: 22px;
+        font-size: 0.9rem;
+        cursor: pointer;
+        transition: 0.2s;
+        white-space: nowrap;
+      }
+      #send-btn {
+        background: #28a745;
+        color: white;
+      }
+      #send-btn:hover:not(:disabled) {
+        background: #218838;
+      }
+      #clear-btn {
+        background: #5a5d63;
+        color: white;
+      }
+      #clear-btn:hover:not(:disabled) {
+        background: #40444b;
+      }
+      #download-btn {
+        background: #ffc107;
+        color: #212529;
+      }
+      #download-btn:hover:not(:disabled) {
+        background: #e0a800;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      /* ========== MOBILE LAYOUT ========== */
+      @media (max-width: 750px) {
+        .header-hint {
+          display: none;
+        }
+        .mode-selector {
+          border-radius: 15px;
+        }
+        .mode-btn {
+          padding: 4px 12px;
+          font-size: 0.75rem;
+        }
+
+        .main-area {
+          flex-direction: column;
+        }
+        .sandbox-wrapper {
+          border-right: none;
+          border-bottom: 1px solid #3a3c42;
+          flex: 1 1 auto;
+          min-height: 0;
+        }
+        .chatbot-panel {
+          width: 100%;
+          border-left: none;
+          border-top: 1px solid #3a3c42;
+          max-height: 45%;
+          flex: 0 0 45%;
+          display: flex;
+        }
+        .bottom-bar {
+          padding: 6px 10px;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+        #command-input {
+          flex: 1 1 auto;
+          min-width: 120px;
+        }
+        #send-btn,
+        #clear-btn,
+        #download-btn {
+          font-size: 0.8rem;
+          padding: 6px 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="header-left">
+        <span>🤖 Builder</span>
+        <div class="mode-selector" id="mode-selector">
+          <button class="mode-btn active" data-mode="auto">Auto</button>
+          <button class="mode-btn" data-mode="generate">Generate</button>
+          <button class="mode-btn" data-mode="edit">Edit</button>
+        </div>
+      </div>
+      <small class="header-hint">Auto detects full page or small edits</small>
+    </header>
+
+    <div class="main-area">
+      <div class="sandbox-wrapper">
+        <div class="sandbox-label">
+          🖥️ Sandbox
+          <span
+            class="mode-indicator"
+            id="mode-indicator"
+            style="
+              background: #007bff;
+              color: white;
+              padding: 2px 10px;
+              border-radius: 12px;
+              font-size: 0.7rem;
+            "
+            >Auto Mode</span
+          >
+        </div>
+        <div id="sandbox"></div>
+        <div class="loading-overlay" id="loading-overlay">
+          <div class="loading-box">
+            <span id="loading-text">Generating</span>
+            <span class="loading-dots"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="chatbot-panel">
+        <div class="chatbot-header">💬 Page Assistant</div>
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-msg assistant">
+            I see what's in the sandbox. Ask me about it!
+          </div>
+        </div>
+        <div class="chat-input-area">
+          <input
+            type="text"
+            id="chat-input"
+            placeholder="Ask about the page..."
+          />
+          <button id="chat-send-btn">➤</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bottom-bar">
+      <div class="log-area" id="log-area"></div>
+      <input type="text" id="command-input" placeholder="Command..." />
+      <button id="send-btn">Build</button>
+      <button id="clear-btn">Clear</button>
+      <button id="download-btn">⬇ Code</button>
+    </div>
+
+    <script>
+      (function () {
+        const sandbox = document.getElementById("sandbox");
+        const commandInput = document.getElementById("command-input");
+        const sendBtn = document.getElementById("send-btn");
+        const clearBtn = document.getElementById("clear-btn");
+        const downloadBtn = document.getElementById("download-btn");
+        const logArea = document.getElementById("log-area");
+        const chatInput = document.getElementById("chat-input");
+        const chatSendBtn = document.getElementById("chat-send-btn");
+        const chatMessages = document.getElementById("chat-messages");
+        const modeBtns = document.querySelectorAll(".mode-btn");
+        const modeIndicator = document.getElementById("mode-indicator");
+        const loadingOverlay = document.getElementById("loading-overlay");
+        const loadingText = document.getElementById("loading-text");
+
+        let selectedMode = "auto";
+        let conversation = [];
+
+        // Mode switching
+        modeBtns.forEach((btn) => {
+          btn.addEventListener("click", () => {
+            modeBtns.forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+            selectedMode = btn.dataset.mode;
+            modeIndicator.textContent =
+              selectedMode === "auto"
+                ? "Auto Mode"
+                : selectedMode === "generate"
+                  ? "Generate Mode"
+                  : "Edit Mode";
+            modeIndicator.style.background =
+              selectedMode === "auto"
+                ? "#007bff"
+                : selectedMode === "generate"
+                  ? "#28a745"
+                  : "#6f42c1";
+            addLog(`Switched to ${selectedMode} mode.`);
+            commandInput.focus();
+          });
+        });
+
+        function addLog(text, isError = false) {
+          const entry = document.createElement("div");
+          entry.className = "log-entry" + (isError ? " error" : "");
+          entry.textContent = text;
+          logArea.appendChild(entry);
+          logArea.scrollTop = logArea.scrollHeight;
+          while (logArea.children.length > 20)
+            logArea.removeChild(logArea.firstChild);
+        }
+
+        function getSandboxContentForAI() {
+          const iframe = sandbox.querySelector("iframe#sandbox-iframe");
+          if (iframe && iframe.contentDocument) {
+            return iframe.contentDocument.documentElement.outerHTML;
+          } else {
+            return sandbox.innerHTML;
+          }
+        }
+
+        function downloadCode() {
+          const code = getSandboxContentForAI();
+          const blob = new Blob([code], { type: "text/html" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "sandbox-code.html";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          addLog("Code downloaded.");
+        }
+
+        function loadFullPage(html) {
+          sandbox.innerHTML = "";
+          const iframe = document.createElement("iframe");
+          iframe.id = "sandbox-iframe";
+          iframe.style.width = "100%";
+          iframe.style.height = "100%";
+          iframe.style.border = "none";
+          sandbox.appendChild(iframe);
+
+          const doc = iframe.contentDocument;
+          doc.open();
+          doc.write(html);
+          doc.close();
+
+          function fixImages(doc) {
+            const imgs = doc.querySelectorAll("img");
+            imgs.forEach((img) => {
+              img.onerror = () => {
+                img.src =
+                  "https://picsum.photos/400/300?random=" + Math.random();
+              };
+              if (
+                !img.src.startsWith("http") ||
+                img.src.startsWith("/") ||
+                img.src.startsWith(".")
+              ) {
+                img.src =
+                  "https://picsum.photos/400/300?random=" + Math.random();
+              }
+            });
+          }
+          fixImages(doc);
+          setTimeout(() => fixImages(doc), 500);
+        }
+
+        function runEditCode(code) {
+          const wrapped = new Function("sandbox", code);
+          wrapped(sandbox);
+        }
+
+        function detectModeFromText(text) {
+          const generateKeywords = [
+            "create",
+            "build",
+            "generate",
+            "make a website",
+            "make a site",
+            "landing page",
+            "homepage",
+            "full page",
+            "complete site",
+          ];
+          const lower = text.toLowerCase();
+          for (const kw of generateKeywords) {
+            if (lower.includes(kw)) return "generate";
+          }
+          return "edit";
+        }
+
+        async function sendBuildCommand() {
+          const command = commandInput.value.trim();
+          if (!command) return;
+
+          let effectiveMode = selectedMode;
+          if (selectedMode === "auto") {
+            effectiveMode = detectModeFromText(command);
+          }
+
+          loadingText.textContent =
+            effectiveMode === "generate" ? "Generating" : "Editing";
+          loadingOverlay.style.display = "flex";
+
+          const currentHTML = getSandboxContentForAI();
+          conversation.push({ role: "user", content: command });
+          if (conversation.length > 10) conversation = conversation.slice(-10);
+
+          addLog(`[${effectiveMode}] You: ${command}`);
+          commandInput.value = "";
+          commandInput.disabled = true;
+          sendBtn.disabled = true;
+          clearBtn.disabled = true;
+          downloadBtn.disabled = true;
+
+          try {
+            // Netlify function endpoint
+            const res = await fetch(
+              "https://ai-backend-v25n.onrender.com/chat",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  messages: conversation,
+                  mode: effectiveMode,
+                  sandboxHTML: currentHTML,
+                }),
+              },
+            );
+
+            if (!res.ok) throw new Error("Server error " + res.status);
+            const data = await res.json();
+
+            conversation.push({
+              role: "assistant",
+              content: JSON.stringify({
+                description: data.description,
+                mode: effectiveMode,
+              }),
+            });
+            if (conversation.length > 10)
+              conversation = conversation.slice(-10);
+
+            addLog("AI: " + data.description);
+
+            if (data.code) {
+              try {
+                if (effectiveMode === "generate") {
+                  loadFullPage(data.code);
+                } else {
+                  runEditCode(data.code);
+                }
+              } catch (execErr) {
+                addLog("Execution error: " + execErr.message, true);
+              }
+            } else {
+              addLog("(No code returned)");
+            }
+          } catch (err) {
+            addLog("Error: " + err.message, true);
+          } finally {
+            loadingOverlay.style.display = "none";
+            commandInput.disabled = false;
+            sendBtn.disabled = false;
+            clearBtn.disabled = false;
+            downloadBtn.disabled = false;
+            commandInput.focus();
+          }
+        }
+
+        function clearSandbox() {
+          sandbox.innerHTML = "";
+          conversation = [];
+          addLog("Sandbox cleared.");
+          commandInput.focus();
+        }
+
+        async function sendChatMessage() {
+          const question = chatInput.value.trim();
+          if (!question) return;
+
+          const userDiv = document.createElement("div");
+          userDiv.className = "chat-msg user";
+          userDiv.textContent = question;
+          chatMessages.appendChild(userDiv);
+          chatInput.value = "";
+
+          const thinkDiv = document.createElement("div");
+          thinkDiv.className = "chat-msg assistant";
+          thinkDiv.textContent = "...";
+          chatMessages.appendChild(thinkDiv);
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+
+          try {
+            const sandboxHTML = getSandboxContentForAI();
+            // Netlify function endpoint
+            const res = await fetch(
+              "https://ai-backend-v25n.onrender.com/ask",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ question, sandboxHTML }),
+              },
+            );
+            if (!res.ok) throw new Error("Server error");
+            const data = await res.json();
+            thinkDiv.textContent = data.reply;
+          } catch (err) {
+            thinkDiv.textContent = "Sorry, an error occurred.";
+          }
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        sendBtn.addEventListener("click", sendBuildCommand);
+        clearBtn.addEventListener("click", clearSandbox);
+        downloadBtn.addEventListener("click", downloadCode);
+        commandInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") sendBuildCommand();
+        });
+
+        chatSendBtn.addEventListener("click", sendChatMessage);
+        chatInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") sendChatMessage();
+        });
+
+        addLog("Ready! Build, edit, and download.");
+        commandInput.focus();
+      })();
+    </script>
+  </body>
+</html>

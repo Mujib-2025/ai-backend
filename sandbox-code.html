@@ -1,0 +1,108 @@
+<html lang="en"><head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern Web Design</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+        header { background: #333; color: white; padding: 1rem 0; position: sticky; top: 0; z-index: 1000; }
+        nav { display: flex; justify-content: space-around; }
+        nav a { color: white; text-decoration: none; padding: 0.5rem 1rem; transition: background 0.3s; }
+        nav a:hover { background: #555; }
+        .hero { background: url('https://picsum.photos/1920/600') no-repeat center center/cover; height: 600px; display: flex; align-items: center; justify-content: center; color: white; text-align: center; }
+        .hero h1 { font-size: 3rem; }
+        .hero p { font-size: 1.5rem; }
+        .container { padding: 2rem; }
+        .features { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+        .feature-card { background: #f4f4f4; padding: 1rem; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
+        .about, .testimonials, .contact { margin: 2rem 0; }
+        .testimonial { background: #e9e9e9; padding: 1rem; border-radius: 8px; margin: 1rem 0; }
+        footer { background: #333; color: white; text-align: center; padding: 1rem 0; }
+        form { display: flex; flex-direction: column; gap: 1rem; }
+        input, textarea { padding: 0.5rem; border-radius: 4px; border: 1px solid #ccc; }
+        button { padding: 0.5rem; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #218838; }
+        @media (max-width: 600px) { .hero h1 { font-size: 2rem; } .hero p { font-size: 1rem; } }
+    </style>
+</head>
+<body>
+    <header>
+        <nav>
+            <a href="#home">Home</a>
+            <a href="#features">Features</a>
+            <a href="#about">About</a>
+            <a href="#testimonials">Testimonials</a>
+            <a href="#contact">Contact</a>
+        </nav>
+    </header>
+    <section class="hero" id="home">
+        <h1>Welcome to Our Modern Web Design</h1>
+        <p>Your success starts with a stunning website!</p>
+    </section>
+    <div class="container">
+        <section class="features" id="features">
+            <h2>Our Features</h2>
+            <div class="feature-card">
+                <h3>Responsive Design</h3>
+                <p>Our designs look great on all devices, from desktops to smartphones.</p>
+                <img src="https://picsum.photos/400/300?random=0.5020741083169371" alt="Responsive Design">
+            </div>
+            <div class="feature-card">
+                <h3>SEO Optimized</h3>
+                <p>We ensure your site is optimized for search engines to increase visibility.</p>
+                <img src="https://picsum.photos/400/300?random=0.4002641416014169" alt="SEO Optimized">
+            </div>
+            <div class="feature-card">
+                <h3>Fast Loading</h3>
+                <p>Our websites load quickly to enhance user experience and engagement.</p>
+                <img src="https://picsum.photos/400/300?random=0.7024971162729826" alt="Fast Loading">
+            </div>
+        </section>
+        <section class="about" id="about">
+            <h2>About Us</h2>
+            <p>We are a team of passionate web designers and developers dedicated to creating beautiful, functional websites that help businesses grow. With years of experience in the industry, we understand what it takes to make a website successful.</p>
+        </section>
+        <section class="testimonials" id="testimonials">
+            <h2>What Our Clients Say</h2>
+            <div class="testimonial">
+                <p>“The team at Modern Web Design exceeded our expectations! Our website looks fantastic and works perfectly.” - Jane Doe</p>
+            </div>
+            <div class="testimonial">
+                <p>“I highly recommend them for any web design needs. They are professional, creative, and deliver on time.” - John Smith</p>
+            </div>
+        </section>
+        <section class="contact" id="contact">
+            <h2>Contact Us</h2>
+            <form id="contactForm">
+                <input type="text" id="name" placeholder="Your Name" required="">
+                <input type="email" id="email" placeholder="Your Email" required="">
+                <textarea id="message" rows="4" placeholder="Your Message" required=""></textarea>
+                <button type="submit">Send Message</button>
+            </form>
+            <div id="successMessage" style="display:none; color: green;">Your message has been sent successfully!</div>
+        </section>
+    </div>
+    <footer>
+        <p>© 2023 Modern Web Design. All rights reserved.</p>
+    </footer>
+    <script>
+        document.getElementById('contactForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+            const name = document.getElementById('name').value;
+            const email = document.getElementById('email').value;
+            const message = document.getElementById('message').value;
+            if (name && email && message) {
+                document.getElementById('successMessage').style.display = 'block';
+                this.reset();
+            }
+        });
+        document.querySelectorAll('nav a').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                target.scrollIntoView({ behavior: 'smooth' });
+            });
+        });
+    </script>
+
+</body></html>
