@@ -1,11 +1,11 @@
-// server.js – AI backend for Render (explicit CORS)
+// server.js – AI backend for Render (full CORS, no timeout)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
 
 const app = express();
 
-// ✅ Explicit CORS settings – allow all origins, methods, headers
+// --------------- CORS – allow all origins ---------------
 app.use(
   cors({
     origin: "*",
@@ -13,32 +13,32 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
-app.options("*", cors()); // handle preflights explicitly
+app.options("*", cors()); // handle preflight requests explicitly
 
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
 
-// OpenRouter client
+// --------------- OpenAI client (OpenRouter) ---------------
 const client = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.DEEPSEEK_API_KEY,
+  apiKey: process.env.DEEPSEEK_API_KEY || "missing-api-key",
   defaultHeaders: {
     "HTTP-Referer": process.env.REFERER_URL || "http://localhost:3000",
     "X-Title": "AI Builder",
   },
 });
 
-/* ============================
-   Helper – extract JSON
-============================ */
+// --------------- Helper: extract JSON from AI response ---------------
 function extractJSON(text) {
   try {
     return JSON.parse(text);
   } catch (e) {
+    // Remove markdown code fences
     let cleaned = text
       .replace(/```json\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```html\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```javascript\s*([\s\S]*?)\s*```/g, "$1")
       .trim();
+    // Try to extract the first JSON object
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
     if (start !== -1 && end !== -1 && end > start) {
@@ -46,6 +46,7 @@ function extractJSON(text) {
       try {
         return JSON.parse(cleaned);
       } catch (e2) {
+        // Try replacing single quotes
         try {
           return JSON.parse(cleaned.replace(/'/g, '"'));
         } catch (e3) {
@@ -57,6 +58,9 @@ function extractJSON(text) {
   }
 }
 
+// ============================
+//  POST /chat – Build / Edit
+// ============================
 app.post("/chat", async (req, res) => {
   try {
     const { messages, mode = "edit", sandboxHTML = "" } = req.body;
@@ -64,7 +68,6 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
-    // Prompt setup (same as your Netlify chat.js)
     let systemContent, temperature, maxTokens;
 
     if (mode === "generate") {
@@ -120,7 +123,7 @@ Your task: **modify or extend** the existing page using JavaScript DOM code.
     }
 
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash", // or swap to 'deepseek/deepseek-chat' if needed
+      model: "deepseek/deepseek-v4-flash", // "deepseek/deepseek-chat" also works
       messages: [{ role: "system", content: systemContent }, ...messages],
       temperature,
       max_tokens: maxTokens,
@@ -134,9 +137,12 @@ Your task: **modify or extend** the existing page using JavaScript DOM code.
       typeof parsed.code === "string" &&
       typeof parsed.description === "string"
     ) {
-      res.json({ code: parsed.code, description: parsed.description });
+      return res.json({ code: parsed.code, description: parsed.description });
     } else {
-      res.json({ code: null, description: text || "Invalid response format." });
+      return res.json({
+        code: null,
+        description: text || "Invalid response format.",
+      });
     }
   } catch (err) {
     console.error("/chat error:", err);
@@ -146,9 +152,9 @@ Your task: **modify or extend** the existing page using JavaScript DOM code.
   }
 });
 
-/* ============================
-   POST /ask – Page assistant
-============================ */
+// ============================
+//  POST /ask – Page assistant
+// ============================
 app.post("/ask", async (req, res) => {
   try {
     const { question, sandboxHTML } = req.body;
@@ -175,60 +181,9 @@ app.post("/ask", async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`AI backend running on port ${PORT}`));
+// --------------- Health check (optional) ---------------
+app.get("/", (req, res) => res.send("AI Backend is running."));
 
-const express = require("express");
-const cors = require("cors");
-const OpenAI = require("openai");
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-const client = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.DEEPSEEK_API_KEY,
-  defaultHeaders: {
-    "HTTP-Referer": process.env.REFERER_URL || "http://localhost:3000",
-    "X-Title": "AI Builder",
-  },
-});
-
-// Helper – same JSON extraction you already use
-function extractJSON(text) {
-  // … (paste your existing extractJSON function here)
-}
-
-/* ============================
-   POST /chat – Generate / Edit
-============================ */
-app.post("/chat", async (req, res) => {
-  try {
-    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-
-    // … same prompt logic as your chat.js (without the timeout)
-    // Use modest max_tokens: 2500 for generate, 1500 for edit
-    const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash", // or deepseek/deepseek-chat
-      messages: [{ role: "system", content: systemContent }, ...messages],
-      temperature: mode === "generate" ? 0.3 : 0.5,
-      max_tokens: mode === "generate" ? 2500 : 1500,
-    });
-
-    const text = completion.choices[0].message.content;
-    // … extract and return JSON
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ============================
-   POST /ask – Page assistant
-============================ */
-app.post("/ask", async (req, res) => {
-  // … same as your ask.js, using the shared OpenAI client
-});
-
+// --------------- Start server ---------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`AI backend running on port ${PORT}`));
