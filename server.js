@@ -13,7 +13,6 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
-app.options("*", cors()); // handle preflight requests explicitly
 
 app.use(express.json({ limit: "5mb" }));
 
