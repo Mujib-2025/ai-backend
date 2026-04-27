@@ -28,16 +28,18 @@ const client = new OpenAI({
 
 // --------------- Helper: extract JSON from AI response ---------------
 function extractJSON(text) {
+  // First try direct parse (should succeed with response_format: json_object)
   try {
     return JSON.parse(text);
   } catch (e) {
-    // Remove markdown code fences
+    // Fallback: strip markdown fences and attempt to find a JSON object
     let cleaned = text
       .replace(/```json\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```html\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```javascript\s*([\s\S]*?)\s*```/g, "$1")
+      .replace(/```\s*([\s\S]*?)\s*```/g, "$1") // any other code fence
       .trim();
-    // Try to extract the first JSON object
+
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
     if (start !== -1 && end !== -1 && end > start) {
@@ -45,7 +47,7 @@ function extractJSON(text) {
       try {
         return JSON.parse(cleaned);
       } catch (e2) {
-        // Try replacing single quotes
+        // Try replacing single quotes (common AI mistake)
         try {
           return JSON.parse(cleaned.replace(/'/g, '"'));
         } catch (e3) {
@@ -70,65 +72,73 @@ app.post("/chat", async (req, res) => {
     let systemContent, temperature, maxTokens;
 
     if (mode === "generate") {
+      // --------- ENHANCED PROMPT FOR LAUNCH-READY SITES/GAMES ---------
       systemContent = `You are a world‑class web designer and front‑end developer.
-You create **complete, modern, fully responsive** HTML pages (including CSS and JavaScript) based on the user's request.
+You create **complete, production‑ready, multi‑section websites or fully functional games** (HTML, CSS, JS) based on the user's request.
 
-Your response must be a valid JSON object:
+Your output must be a single JSON object with the following structure:
 {
-  "code": "<full HTML page (from <!DOCTYPE html> to </html>)>",
+  "code": "<full HTML page from <!DOCTYPE html> to </html>>",
   "description": "a short, friendly summary of what you built"
 }
 
-Keep the HTML efficient (under 2500 tokens). Use clean, production‑ready code.
+**ABSOLUTE REQUIREMENTS** (the page must be ready to publish immediately):
+- **Real content:** No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
+- **Complete website structure:** Include a proper <header> (with logo and navigation), a <main> area with several meaningful sections (hero, features, about, services/projects, contact, footer), and a well‑styled <footer>.
+- **Working navigation:** Internal links (href="#section") must scroll smoothly; external links (if any) must use valid placeholders like "#".
+- **Responsive design:** Use modern CSS (grid/flexbox, media queries) so the layout works perfectly on mobile, tablet, and desktop.
+- **Interactive elements:** Buttons, forms, sliders, or cards must have functional event handlers. For a game, include game logic, scoring, win/loss conditions, restart, and appropriate UI.
+- **SEO basics:** Add a descriptive <title>, <meta name="description">, and semantic HTML5 tags.
+- **Images:** Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\` or \`https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT\`. No local paths.
+- **Performance:** Keep total size under 6000 tokens (the code may be longer than usual – that's okay).
 
-🖼️ **IMAGE RULES (CRITICAL)**:
-- ALWAYS use absolute, working image URLs starting with "https://".
-- NEVER use local file names like "image.png", "/img/hero.jpg", or "./photo.jpg".
-- Use real placeholder services:
-    - "https://picsum.photos/WIDTH/HEIGHT" (random photo)
-    - "https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT" (specific photo)
-    - "https://via.placeholder.com/WIDTHxHEIGHT?text=TEXT" (colored placeholder)
-- All images must be directly viewable in a browser.
-`;
-      temperature = 0.3;
-      maxTokens = 2500;
+Example for a game: a fully playable Tic‑Tac‑Toe with player/computer turns, score tracking, and a reset button.
+Example for a portfolio site: hero image, about, skills, projects, contact form, and a sticky navbar.
+
+Return **only** the JSON object. Do NOT wrap it in markdown.`;
+      temperature = 0.2; // more deterministic
+      maxTokens = 6000; // sufficient for rich pages
     } else {
+      // --------- ENHANCED EDIT MODE PROMPT ---------
       systemContent = `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
-The current content is:
+The current page content is:
 
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
 
-Your task: **modify or extend** the existing page using JavaScript DOM code.
-- Preserve all existing elements unless the user explicitly asks to remove/replace something.
-- Use standard methods (querySelector, createElement, appendChild, innerHTML on specific containers).
-- The code will run inside the sandbox (which may contain an iframe with id "sandbox-iframe").
-  If the content is inside that iframe, you must access it via:
+Your task: **write a JavaScript snippet that modifies or extends the sandbox** to fulfill the user's request.
+- The JavaScript will run inside the sandbox (which contains an iframe with id "sandbox-iframe").
+  To access the page inside, always use:
     const iframe = document.getElementById('sandbox-iframe');
     const doc = iframe.contentDocument;
   and then manipulate the iframe's document.
-- Never use alert, prompt, or document.write.
+- Preserve all existing elements unless the user explicitly asks to remove/replace something.
+- Use only stable DOM methods (querySelector, createElement, appendChild, classList, etc.).
+- Do NOT use alert, prompt, or document.write.
+- For images, use absolute URLs like \`https://picsum.photos/400/300\`. Never local paths.
 
-🖼️ **IMAGE RULES**:
-- When adding an image, use an absolute "https://" URL.
-- Use "https://picsum.photos/400/300" or "https://via.placeholder.com/400x300?text=Image" as a placeholder.
-- NEVER use local file paths like "image.png" or "./image.jpg".
+**Your response must be a single JSON object:**
+{"code": "the JavaScript code", "description": "one sentence summary of what was done"}
 
-- Return ONLY a JSON object: {"code": "...", "description": "..."}
-- The "code" field must be executable JavaScript (no markdown inside the string).`;
-      temperature = 0.5;
+- The "code" field must contain only executable JavaScript (no markdown, no HTML wrapping). Do NOT include \`\`\`javascript fences.
+- The "description" is for the log; make it short and human‑friendly.
+
+Return **only** the JSON object.`;
+      temperature = 0.3;
       maxTokens = 1500;
     }
 
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash", // "deepseek/deepseek-chat" also works
+      model: "deepseek/deepseek-v4-flash", // also supports "deepseek/deepseek-chat"
       messages: [{ role: "system", content: systemContent }, ...messages],
       temperature,
       max_tokens: maxTokens,
+      response_format: { type: "json_object" }, // <-- forces valid JSON
     });
 
     const text = completion.choices[0].message.content;
+    // With response_format: json_object, the content should be parseable as JSON immediately
     const parsed = extractJSON(text);
 
     if (
@@ -138,6 +148,7 @@ Your task: **modify or extend** the existing page using JavaScript DOM code.
     ) {
       return res.json({ code: parsed.code, description: parsed.description });
     } else {
+      // Fallback: send the raw text as description, but this should rarely happen now.
       return res.json({
         code: null,
         description: text || "Invalid response format.",
@@ -163,7 +174,7 @@ app.post("/ask", async (req, res) => {
 
     const systemMessage = {
       role: "system",
-      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it.`,
+      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Do NOT include any code in your answer unless explicitly asked; provide clear, concise explanations.`,
     };
 
     const completion = await client.chat.completions.create({
@@ -171,17 +182,33 @@ app.post("/ask", async (req, res) => {
       messages: [systemMessage, { role: "user", content: question }],
       temperature: 0.7,
       max_tokens: 800,
+      response_format: { type: "json_object" },
     });
 
-    res.json({ reply: completion.choices[0].message.content });
+    let reply;
+    try {
+      // The assistant is asked to return a JSON, but we'll try to extract a "reply" field.
+      const data = JSON.parse(completion.choices[0].message.content);
+      reply =
+        data.reply ||
+        data.answer ||
+        data.response ||
+        "Here's what I think: " + completion.choices[0].message.content;
+    } catch {
+      reply = completion.choices[0].message.content;
+    }
+
+    res.json({ reply });
   } catch (err) {
     console.error("/ask error:", err);
     res.status(500).json({ reply: "Sorry, something went wrong." });
   }
 });
 
-// --------------- Health check (optional) ---------------
-app.get("/", (req, res) => res.send("AI Backend is running."));
+// --------------- Health check ---------------
+app.get("/", (req, res) =>
+  res.send("AI Backend (v2 – launch-ready) is running."),
+);
 
 // --------------- Start server ---------------
 const PORT = process.env.PORT || 3000;
