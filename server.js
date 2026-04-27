@@ -1,4 +1,4 @@
-// server.js – AI backend for Render (streaming with code‑derived live status)
+// server.js – AI backend for Render (full CORS, no timeout)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -28,15 +28,18 @@ const client = new OpenAI({
 
 // --------------- Helper: extract JSON from AI response ---------------
 function extractJSON(text) {
+  // First try direct parse (should succeed with response_format: json_object)
   try {
     return JSON.parse(text);
   } catch (e) {
+    // Fallback: strip markdown fences and attempt to find a JSON object
     let cleaned = text
       .replace(/```json\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```html\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```javascript\s*([\s\S]*?)\s*```/g, "$1")
-      .replace(/```\s*([\s\S]*?)\s*```/g, "$1")
+      .replace(/```\s*([\s\S]*?)\s*```/g, "$1") // any other code fence
       .trim();
+
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
     if (start !== -1 && end !== -1 && end > start) {
@@ -44,6 +47,7 @@ function extractJSON(text) {
       try {
         return JSON.parse(cleaned);
       } catch (e2) {
+        // Try replacing single quotes (common AI mistake)
         try {
           return JSON.parse(cleaned.replace(/'/g, '"'));
         } catch (e3) {
@@ -55,231 +59,86 @@ function extractJSON(text) {
   }
 }
 
-// --------------- Generate a meaningful status from partial code ---------------
-function codeStatus(code) {
-  if (!code || code.length < 20) return "Starting to build…";
-
-  // Try to guess the type
-  const isHTML = /<!doctype html|<html|<head|<body/i.test(code);
-  const isJS =
-    !isHTML && /\bfunction\b|\bconst\b|\blet\b|\bdocument\./.test(code);
-
-  if (isHTML) {
-    // Look for the last meaningful HTML element that was opened
-    const tagMatches = code.match(/<(\w+)(\s[^>]*)?>/g);
-    if (tagMatches) {
-      const lastTag = tagMatches[tagMatches.length - 1].match(/<(\w+)/)[1];
-      // Map tags to friendly descriptions
-      const tagMap = {
-        header: "header with navigation",
-        nav: "navigation bar",
-        section: "content section",
-        div: "layout container",
-        main: "main content area",
-        footer: "footer",
-        form: "form",
-        button: "button",
-        img: "image",
-        h1: "heading",
-        h2: "heading",
-        p: "text paragraph",
-        ul: "list",
-        table: "table",
-        script: "JavaScript",
-        style: "CSS styles",
-      };
-      const desc = tagMap[lastTag] || lastTag;
-      return `Building <${lastTag}> (${desc})…`;
-    }
-    // If can't identify, check CSS
-    if (code.includes("{") && code.includes("}")) return "Writing CSS styles…";
-    return "Structuring HTML…";
-  }
-
-  if (isJS) {
-    if (code.includes("addEventListener")) return "Adding event listeners…";
-    if (code.includes("createElement")) return "Creating new DOM elements…";
-    if (code.includes("querySelector")) return "Selecting page elements…";
-    if (code.includes("function")) return "Writing JavaScript functions…";
-    if (code.includes("game") || code.includes("board"))
-      return "Implementing game logic…";
-    return "Writing JavaScript code…";
-  }
-
-  // Fallback
-  return "Generating code…";
-}
-
 // ============================
 //  POST /chat – Build / Edit
 // ============================
 app.post("/chat", async (req, res) => {
   try {
-    const {
-      messages,
-      mode = "edit",
-      sandboxHTML = "",
-      stream = false,
-    } = req.body;
+    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array required" });
     }
 
     let systemContent, temperature, maxTokens;
 
-    // ---------- System prompts (same as before) ----------
-    const baseGeneratePrompt = `You are a world‑class web designer and front‑end developer.
+    if (mode === "generate") {
+      // --------- ENHANCED PROMPT FOR LAUNCH-READY SITES/GAMES ---------
+      systemContent = `You are a world‑class web designer and front‑end developer.
 You create **complete, production‑ready, multi‑section websites or fully functional games** (HTML, CSS, JS) based on the user's request.
 
-Your output must be a JSON object:
+Your output must be a single JSON object with the following structure:
 {
   "code": "<full HTML page from <!DOCTYPE html> to </html>>",
-  "description": "a short friendly summary of what you built"
+  "description": "a short, friendly summary of what you built"
 }
 
-Requirements: real content, complete sections, responsive, interactive, SEO-friendly, images with absolute URLs.`;
+**ABSOLUTE REQUIREMENTS** (the page must be ready to publish immediately):
+- **Real content:** No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
+- **Complete website structure:** Include a proper <header> (with logo and navigation), a <main> area with several meaningful sections (hero, features, about, services/projects, contact, footer), and a well‑styled <footer>.
+- **Working navigation:** Internal links (href="#section") must scroll smoothly; external links (if any) must use valid placeholders like "#".
+- **Responsive design:** Use modern CSS (grid/flexbox, media queries) so the layout works perfectly on mobile, tablet, and desktop.
+- **Interactive elements:** Buttons, forms, sliders, or cards must have functional event handlers. For a game, include game logic, scoring, win/loss conditions, restart, and appropriate UI.
+- **SEO basics:** Add a descriptive <title>, <meta name="description">, and semantic HTML5 tags.
+- **Images:** Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\` or \`https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT\`. No local paths.
+- **Performance:** Keep total size under 6000 tokens (the code may be longer than usual – that's okay).
 
-    const baseEditPrompt = `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
+Example for a game: a fully playable Tic‑Tac‑Toe with player/computer turns, score tracking, and a reset button.
+Example for a portfolio site: hero image, about, skills, projects, contact form, and a sticky navbar.
+
+Return **only** the JSON object. Do NOT wrap it in markdown.`;
+      temperature = 0.2; // more deterministic
+      maxTokens = 6000; // sufficient for rich pages
+    } else {
+      // --------- ENHANCED EDIT MODE PROMPT ---------
+      systemContent = `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
 The current page content is:
 
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
 
-Your task: **write a JavaScript snippet that modifies or extends the sandbox**.
-- Use document.getElementById('sandbox-iframe') and its contentDocument.
-- Preserve existing elements, use stable DOM methods.
-- For images, absolute URLs like https://picsum.photos/400/300.
-- Return a JSON object: {"code": "the JavaScript", "description": "what you did"}.
-- The "code" field must be pure JS (no markdown).`;
+Your task: **write a JavaScript snippet that modifies or extends the sandbox** to fulfill the user's request.
+- The JavaScript will run inside the sandbox (which contains an iframe with id "sandbox-iframe").
+  To access the page inside, always use:
+    const iframe = document.getElementById('sandbox-iframe');
+    const doc = iframe.contentDocument;
+  and then manipulate the iframe's document.
+- Preserve all existing elements unless the user explicitly asks to remove/replace something.
+- Use only stable DOM methods (querySelector, createElement, appendChild, classList, etc.).
+- Do NOT use alert, prompt, or document.write.
+- For images, use absolute URLs like \`https://picsum.photos/400/300\`. Never local paths.
 
-    // ---------- STREAMING BRANCH (improved) ----------
-    if (stream) {
-      if (mode === "generate") {
-        systemContent = `${baseGeneratePrompt}\n\nReturn ONLY the JSON object. No markdown.`;
-        temperature = 0.2;
-        maxTokens = 6000;
-      } else {
-        systemContent = `${baseEditPrompt}\n\nReturn ONLY the JSON object. No markdown.`;
-        temperature = 0.3;
-        maxTokens = 1500;
-      }
+**Your response must be a single JSON object:**
+{"code": "the JavaScript code", "description": "one sentence summary of what was done"}
 
-      // Set SSE headers
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
+- The "code" field must contain only executable JavaScript (no markdown, no HTML wrapping). Do NOT include \`\`\`javascript fences.
+- The "description" is for the log; make it short and human‑friendly.
 
-      const sendSSE = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
-
-      let lastStatus = "AI is starting…";
-      sendSSE({ type: "status", message: lastStatus });
-
-      // Start streaming with JSON object format
-      const completion = await client.chat.completions.create({
-        model: "deepseek/deepseek-v4-flash",
-        messages: [{ role: "system", content: systemContent }, ...messages],
-        temperature,
-        max_tokens: maxTokens,
-        response_format: { type: "json_object" },
-        stream: true,
-      });
-
-      let accumulatedJSON = "";
-      let codeSoFar = "";
-      let lastStatusSent = "";
-
-      // Heartbeat to update status every 3 seconds (in case code hasn't changed)
-      const heartbeat = setInterval(() => {
-        if (!res.writableEnded) {
-          const status = codeStatus(codeSoFar);
-          if (status !== lastStatusSent) {
-            lastStatusSent = status;
-            sendSSE({ type: "status", message: status });
-          }
-        } else {
-          clearInterval(heartbeat);
-        }
-      }, 3000);
-
-      for await (const part of completion) {
-        const content = part.choices[0]?.delta?.content || "";
-        if (content) {
-          accumulatedJSON += content;
-
-          // Try to parse partial JSON to extract the "code" field so far
-          try {
-            const partial = JSON.parse(accumulatedJSON);
-            if (partial.code && partial.code !== codeSoFar) {
-              codeSoFar = partial.code;
-              const newStatus = codeStatus(codeSoFar);
-              if (newStatus !== lastStatusSent) {
-                lastStatusSent = newStatus;
-                sendSSE({ type: "status", message: newStatus });
-              }
-            }
-          } catch (e) {
-            // JSON not fully formed yet – ignore
-          }
-        }
-      }
-
-      clearInterval(heartbeat);
-
-      // Final parse
-      const finalParsed = extractJSON(accumulatedJSON);
-      if (finalParsed && finalParsed.code && finalParsed.description) {
-        sendSSE({
-          type: "result",
-          code: finalParsed.code,
-          description: finalParsed.description,
-        });
-      } else {
-        // Fallback: maybe the JSON was complete but extractJSON failed; try original accumulated
-        const fallback = extractJSON(accumulatedJSON);
-        if (fallback && fallback.code && fallback.description) {
-          sendSSE({
-            type: "result",
-            code: fallback.code,
-            description: fallback.description,
-          });
-        } else {
-          sendSSE({
-            type: "result",
-            code: null,
-            description: "Could not generate valid code.",
-          });
-        }
-      }
-
-      res.end();
-      return;
-    }
-
-    // ---------- NON‑STREAMING BRANCH (unchanged) ----------
-    if (mode === "generate") {
-      systemContent = `${baseGeneratePrompt}\n\nReturn only the JSON object. No markdown.`;
-      temperature = 0.2;
-      maxTokens = 6000;
-    } else {
-      systemContent = `${baseEditPrompt}\n\nReturn only the JSON object. No markdown.`;
+Return **only** the JSON object.`;
       temperature = 0.3;
       maxTokens = 1500;
     }
 
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash",
+      model: "deepseek/deepseek-v4-flash", // also supports "deepseek/deepseek-chat"
       messages: [{ role: "system", content: systemContent }, ...messages],
       temperature,
       max_tokens: maxTokens,
-      response_format: { type: "json_object" },
-      stream: false,
+      response_format: { type: "json_object" }, // <-- forces valid JSON
     });
 
     const text = completion.choices[0].message.content;
+    // With response_format: json_object, the content should be parseable as JSON immediately
     const parsed = extractJSON(text);
 
     if (
@@ -289,6 +148,7 @@ Your task: **write a JavaScript snippet that modifies or extends the sandbox**.
     ) {
       return res.json({ code: parsed.code, description: parsed.description });
     } else {
+      // Fallback: send the raw text as description, but this should rarely happen now.
       return res.json({
         code: null,
         description: text || "Invalid response format.",
@@ -296,11 +156,9 @@ Your task: **write a JavaScript snippet that modifies or extends the sandbox**.
     }
   } catch (err) {
     console.error("/chat error:", err);
-    if (!res.headersSent) {
-      res
-        .status(500)
-        .json({ code: null, description: "Server error: " + err.message });
-    }
+    res
+      .status(500)
+      .json({ code: null, description: "Server error: " + err.message });
   }
 });
 
@@ -316,7 +174,7 @@ app.post("/ask", async (req, res) => {
 
     const systemMessage = {
       role: "system",
-      content: `You are a helpful assistant. The user is viewing a web page:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question clearly.`,
+      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Do NOT include any code in your answer unless explicitly asked; provide clear, concise explanations.`,
     };
 
     const completion = await client.chat.completions.create({
@@ -324,9 +182,23 @@ app.post("/ask", async (req, res) => {
       messages: [systemMessage, { role: "user", content: question }],
       temperature: 0.7,
       max_tokens: 800,
+      response_format: { type: "json_object" },
     });
 
-    res.json({ reply: completion.choices[0].message.content });
+    let reply;
+    try {
+      // The assistant is asked to return a JSON, but we'll try to extract a "reply" field.
+      const data = JSON.parse(completion.choices[0].message.content);
+      reply =
+        data.reply ||
+        data.answer ||
+        data.response ||
+        "Here's what I think: " + completion.choices[0].message.content;
+    } catch {
+      reply = completion.choices[0].message.content;
+    }
+
+    res.json({ reply });
   } catch (err) {
     console.error("/ask error:", err);
     res.status(500).json({ reply: "Sorry, something went wrong." });
@@ -335,7 +207,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend (live code‑derived status) is running."),
+  res.send("AI Backend (v2 – launch-ready) is running."),
 );
 
 // --------------- Start server ---------------
