@@ -75,11 +75,10 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (ENHANCED) ---------------
-function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
+// --------------- Helper: build system prompt (ADVANCED ONLY + CONTEXT IMAGES) ---------------
+function buildSystemPrompt(mode, sandboxHTML, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
-  const isSimple = complexity === "simple";
 
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -118,13 +117,24 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     gameInstructions = `- If a standard website, include header, main, footer, etc.`;
   }
 
-  let complexityInstructions =
-    complexity === "simple"
-      ? `- **Simple Mode**: Keep code LINEAR and SHORT. Use minimal DOM, minimal CSS, and absolutely no unnecessary text. All game logic/interactions MUST be fully implemented and working. NO placeholder comments like \`// TODO\`. If you run out of tokens, prioritize functionality over styling.`
-      : `- **Advanced Mode**: Richer styling and animations.`;
-
   const noPromptAlert =
     "- **NEVER** use `prompt()`, `alert()`, `document.write()`, `<input>`, `<textarea>`, or `contenteditable` unless the user explicitly asks for a form. For games, strictly avoid them.";
+
+  // ---------- IMAGE INSTRUCTIONS (context-sensitive) ----------
+  const imageInstructions = `
+**IMAGE REQUIREMENTS (extremely important):**
+- Always use **context-relevant real images** from a free stock service.
+- Use the format: \`https://source.unsplash.com/featured/?{DESCRIPTIVE_KEYWORD}/{WIDTH}x{HEIGHT}\`
+  * Replace {DESCRIPTIVE_KEYWORD} with a word that matches the **content/theme** of the image (e.g., “nature”, “office”, “food”, “game”, “space”, “tic-tac-toe”).
+  * Examples:
+    - For a restaurant site: \`https://source.unsplash.com/featured/?food/800x600\`
+    - For a travel agency: \`https://source.unsplash.com/featured/?travel/1200x800\`
+    - For a game background: \`https://source.unsplash.com/featured/?game,playful/400x300\`
+  * You can also use multiple keywords separated by commas for variety.
+- **Never** use placeholder images like “https://via.placeholder.com/...” or random Lorem Picsum with no seed.
+- If the user mentions explicit image topics, use exactly those topics as keywords.
+- Guarantee every image is unique and topical by adjusting the keywords appropriately.
+`;
 
   if (isGenerate) {
     return `You are a world‑class web designer.
@@ -135,8 +145,8 @@ Response: ONLY a JSON object:
 
 ${layoutInstructions}
 ${gameInstructions}
-${complexityInstructions}
 ${noPromptAlert}
+${imageInstructions}
 
 **CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
 - If your page contains **any buttons, clickable elements, or game interactions**, you MUST add actual JavaScript event listeners (addEventListener, onclick, etc.) that make them fully functional.
@@ -147,8 +157,7 @@ ${noPromptAlert}
 
 **REQUIREMENTS**:
 - Real content, no lorem ipsum.
-- Images: absolute URLs like \`https://picsum.photos/WIDTH/HEIGHT\`.
-- If a **game**, it must be playable immediately – all logic, scoring, and win/lose conditions included.
+- Images: use the context-sensitive unsplash URLs as described.
 - Your entire message must start with { and end with }. No markdown, no commentary.`;
   } else {
     return `You are an expert front‑end developer.
@@ -165,7 +174,7 @@ Write a **JavaScript snippet** that runs inside the sandbox to fulfill the user'
 ${noPromptAlert}
 ${layoutInstructions}
 ${gameInstructions}
-${complexityInstructions}
+${imageInstructions}
 
 **CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
 - Any added buttons/elements must respond immediately to clicks/touches.
@@ -187,7 +196,6 @@ app.post("/chat", async (req, res) => {
       messages,
       mode = "edit",
       sandboxHTML = "",
-      complexity = "simple",
       device = "desktop",
     } = req.body;
     if (!messages || !Array.isArray(messages)) {
@@ -197,17 +205,12 @@ app.post("/chat", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
-    let maxTokens;
-    if (complexity === "simple") {
-      maxTokens = mode === "generate" ? 5000 : 1500; // increased
-    } else {
-      maxTokens = mode === "generate" ? 6000 : 2000;
-    }
+    // Advanced‑only token limits
+    const maxTokens = mode === "generate" ? 6000 : 2000;
 
     const systemContent = buildSystemPrompt(
       mode,
       sandboxHTML,
-      complexity,
       device,
       userMessage,
     );
@@ -257,7 +260,6 @@ app.post("/chat/stream", async (req, res) => {
       messages,
       mode = "edit",
       sandboxHTML = "",
-      complexity = "simple",
       device = "desktop",
     } = req.body;
     if (!messages || !Array.isArray(messages)) {
@@ -267,17 +269,12 @@ app.post("/chat/stream", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
-    let maxTokens;
-    if (complexity === "simple") {
-      maxTokens = mode === "generate" ? 5000 : 1500; // increased
-    } else {
-      maxTokens = mode === "generate" ? 6000 : 2000;
-    }
+    // Advanced‑only token limits
+    const maxTokens = mode === "generate" ? 6000 : 2000;
 
     const systemContent = buildSystemPrompt(
       mode,
       sandboxHTML,
-      complexity,
       device,
       userMessage,
     );
@@ -369,7 +366,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v8 (fixed buttons, games, mobile UI) is running."),
+  res.send("AI Backend v9 (advanced only + context images) is running."),
 );
 
 // --------------- Start server ---------------
