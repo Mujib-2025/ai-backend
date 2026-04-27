@@ -58,7 +58,6 @@ function extractJSON(text) {
 
 // --------------- Helper: extract HTML or JS code from raw text ---------------
 function extractCodeFromRawText(text, mode) {
-  // If mode is generate, look for a full HTML page
   if (mode === "generate") {
     const htmlMatch = text.match(/```html\s*([\s\S]*?)\s*```/);
     if (htmlMatch) return htmlMatch[1].trim();
@@ -67,7 +66,6 @@ function extractCodeFromRawText(text, mode) {
     if (doctypeMatch) return doctypeMatch[0].trim();
   }
 
-  // For edit mode, look for JavaScript code block
   const jsMatch = text.match(/```javascript\s*([\s\S]*?)\s*```/);
   if (jsMatch) return jsMatch[1].trim();
 
@@ -80,10 +78,39 @@ function extractCodeFromRawText(text, mode) {
 // --------------- Helper: build system prompt ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device) {
   const isGenerate = mode === "generate";
-  const deviceTarget =
-    device === "mobile"
-      ? "mobile (small touch screens, max-width 480px in mind)"
-      : "desktop (wide screens, mouse interaction)";
+  const isMobile = device === "mobile";
+  const isSimple = complexity === "simple";
+
+  let deviceGuidelines = "";
+  if (isMobile) {
+    deviceGuidelines = `
+**DEVICE TARGET: MOBILE (strict)**
+- Design for a vertical single‑column layout. The page must not scroll horizontally.
+- Use 'max-width: 100%; overflow-x: hidden;' on the body / main container.
+- All interactive elements must have minimum touch targets of 44x44px.
+- No hover‑only interactions – use click/active states instead.
+- Font sizes should be legible on small screens (16px minimum for body text).
+- The layout should feel like a native mobile experience, not a scaled‑down desktop page.
+- Use flex‑box or grid with 'flex-wrap: wrap' only if absolutely necessary, avoid creating wide content.
+`;
+  } else {
+    deviceGuidelines = `
+**DEVICE TARGET: DESKTOP**
+- Optimise for wider screens (1024px+), mouse interactions, and hover effects.
+- Use responsive design that still adapts to smaller viewports, but the primary focus is desktop.
+`;
+  }
+
+  let complexityGuidelines = "";
+  if (isSimple) {
+    complexityGuidelines = `
+**QUALITY: SIMPLE MODE**
+- Generate a **lightweight, minimal** page. Use only essential CSS and clean, short JS.
+- **BUT:** All requested functionality MUST work perfectly. Game logic, buttons, form handling – everything must be fully operational.
+- Prioritise working code over decoration. Fancy animations or extra sections may be omitted.
+- Keep total code concise – aim for the smallest possible size while remaining functional.
+`;
+  }
 
   if (isGenerate) {
     return `You are a world‑class web designer and front‑end developer.
@@ -97,10 +124,8 @@ Your response must be a single JSON object with this exact structure and nothing
 
 **CRITICAL:** Your entire message must start with { and end with }. No introductory text, no markdown fences, no commentary. Just the raw JSON.
 
-**DEVICE TARGET:** ${deviceTarget}
-- Optimise the entire page for that device: font sizes, touch targets, layouts, interactions.
-- For mobile: use mobile‑first responsive CSS, large touch areas, no hover‑dependent elements.
-- For desktop: use larger layouts, hover effects, fine‑grain pointer interactions.
+${deviceGuidelines}
+${complexityGuidelines}
 
 **ABSOLUTE REQUIREMENTS** (the page must be ready to publish immediately):
 - **Real content:** No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
@@ -110,7 +135,7 @@ Your response must be a single JSON object with this exact structure and nothing
 - **Interactive elements:** Buttons, forms, sliders, or cards must have functional event handlers. For a game, include game logic, scoring, win/loss conditions, restart, and appropriate UI.
 - **SEO basics:** Add a descriptive <title>, <meta name="description">, and semantic HTML5 tags.
 - **Images:** Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\` or \`https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT\`. No local paths.
-- **Performance:** Keep total size under ${complexity === "simple" ? 1500 : 6000} tokens.
+- **Performance:** Keep total size under ${isSimple ? 3000 : 6000} tokens.
 
 Remember: return ONLY the JSON object, no markdown wrapping.`;
   } else {
@@ -132,7 +157,8 @@ Your task: **write a JavaScript snippet that modifies or extends the sandbox** t
 - Do NOT use alert, prompt, or document.write.
 - For images, use absolute URLs like \`https://picsum.photos/400/300\`. Never local paths.
 
-**Device target:** ${deviceTarget} — ensure your JavaScript additions respect the design constraints of that device (e.g., larger touch targets for mobile, hover fallbacks).
+${deviceGuidelines}
+${complexityGuidelines}
 
 **Your response must be a single JSON object with this exact structure and nothing else:**
 {"code": "the JavaScript code", "description": "one sentence summary of what was done"}
@@ -158,14 +184,13 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
-    let maxTokens =
-      complexity === "simple"
-        ? mode === "generate"
-          ? 1500
-          : 500
-        : mode === "generate"
-          ? 6000
-          : 2000;
+    // Increased token budgets for simple mode to allow functionality
+    let maxTokens;
+    if (complexity === "simple") {
+      maxTokens = mode === "generate" ? 3000 : 1000;
+    } else {
+      maxTokens = mode === "generate" ? 6000 : 2000;
+    }
 
     const systemContent = buildSystemPrompt(
       mode,
@@ -193,7 +218,6 @@ app.post("/chat", async (req, res) => {
     ) {
       return res.json({ code: parsed.code, description: parsed.description });
     } else {
-      // Try to salvage from raw text
       const code = extractCodeFromRawText(text, mode);
       if (code) {
         return res.json({ code, description: "Auto‑extracted from response." });
@@ -227,14 +251,12 @@ app.post("/chat/stream", async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
-    let maxTokens =
-      complexity === "simple"
-        ? mode === "generate"
-          ? 1500
-          : 500
-        : mode === "generate"
-          ? 6000
-          : 2000;
+    let maxTokens;
+    if (complexity === "simple") {
+      maxTokens = mode === "generate" ? 3000 : 1000;
+    } else {
+      maxTokens = mode === "generate" ? 6000 : 2000;
+    }
 
     const systemContent = buildSystemPrompt(
       mode,
@@ -268,7 +290,6 @@ app.post("/chat/stream", async (req, res) => {
       }
     }
 
-    // First, try standard JSON extraction
     let parsed = extractJSON(fullContent);
     let code = null;
     let description = "";
@@ -281,7 +302,6 @@ app.post("/chat/stream", async (req, res) => {
       code = parsed.code;
       description = parsed.description;
     } else {
-      // Attempt to extract code from raw text (may contain markdown fences)
       code = extractCodeFromRawText(fullContent, mode);
       if (code) {
         description = "Extracted from raw AI response.";
@@ -332,7 +352,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v4 (auto‑extract code) is running."),
+  res.send("AI Backend v5 (mobile strict + simple functional) is running."),
 );
 
 // --------------- Start server ---------------
