@@ -75,10 +75,11 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (ADVANCED ONLY + CONTEXT IMAGES) ---------------
-function buildSystemPrompt(mode, sandboxHTML, device, userMessage) {
+// --------------- Helper: build system prompt (IMAGE RULES RESTORED) ---------------
+function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
+  const isSimple = complexity === "simple";
 
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -92,93 +93,97 @@ function buildSystemPrompt(mode, sandboxHTML, device, userMessage) {
   if (isMobile) {
     layoutInstructions = `
 - **CRITICAL: STRICT VERTICAL MOBILE LAYOUT**
-  * The entire page must be a **single vertical column** that fits a phone screen without any horizontal scrolling.
+  * The entire page must fit a phone screen without any horizontal scrolling.
   * Use \`max-width: 100vw; overflow-x: hidden; box-sizing: border-box;\` on body and all containers.
-  * No fixed widths; all widths in percentages or \`100%\`.
-  * Avoid CSS Grid with large fixed columns; use flexbox column.
+  * No fixed widths; percentages or \`100%\`.
   * Touch targets at least 44×44px.
-  * **Absolutely no horizontal scrollbars.**
+  * Absolutely no horizontal scrollbars.
 `;
   } else {
-    layoutInstructions = `- **Desktop layout** - responsive, secondary mobile support.`;
+    layoutInstructions = `- **Desktop layout** – responsive, mobile‑friendly.`;
   }
 
   let gameInstructions = "";
   if (isGame) {
     gameInstructions = `
-- **YOU ARE BUILDING A GAME, NOT A MULTI‑SECTION WEBSITE.**
-  * The entire page must be a **single gameplay screen** – no header, navigation, or sections like “home”, “contact”, “about”.
-  * Only the game itself (canvas, board, buttons, score, restart) should exist.
-  * The layout must be clean and focused on the game mechanics.
-  * **DO NOT use any input fields, textareas, prompt(), or contenteditable.** These would pop up the mobile keyboard, which destroys the game experience.
-  * Disable user‑select and focus outlines where possible to prevent accidental keyboard.
+- **YOU ARE BUILDING A GAME – NOT A MULTI‑SECTION WEBSITE.**
+  * Single gameplay screen only (canvas/board, buttons, score, restart). No header, nav, etc.
+  * **NO input fields, textareas, prompt() or contenteditable** – they trigger mobile keyboard.
+  * Disable user‑select and focus outlines.
 `;
   } else {
-    gameInstructions = `- If a standard website, include header, main, footer, etc.`;
+    gameInstructions = `- For a standard website, include header, main, footer, etc.`;
   }
 
-  const noPromptAlert =
-    "- **NEVER** use `prompt()`, `alert()`, `document.write()`, `<input>`, `<textarea>`, or `contenteditable` unless the user explicitly asks for a form. For games, strictly avoid them.";
+  let complexityInstructions =
+    complexity === "simple"
+      ? `- **Simple Mode**: Minimal but complete. All logic must work; prioritize function over decoration.`
+      : `- **Advanced Mode**: Richer styling, animations, but still rock‑solid functionality.`;
 
-  // ---------- IMAGE INSTRUCTIONS (context-sensitive) ----------
-  const imageInstructions = `
-**IMAGE REQUIREMENTS (extremely important):**
-- Always use **context-relevant real images** from a free stock service.
-- Use the format: \`https://source.unsplash.com/featured/?{DESCRIPTIVE_KEYWORD}/{WIDTH}x{HEIGHT}\`
-  * Replace {DESCRIPTIVE_KEYWORD} with a word that matches the **content/theme** of the image (e.g., “nature”, “office”, “food”, “game”, “space”, “tic-tac-toe”).
-  * Examples:
-    - For a restaurant site: \`https://source.unsplash.com/featured/?food/800x600\`
-    - For a travel agency: \`https://source.unsplash.com/featured/?travel/1200x800\`
-    - For a game background: \`https://source.unsplash.com/featured/?game,playful/400x300\`
-  * You can also use multiple keywords separated by commas for variety.
-- **Never** use placeholder images like “https://via.placeholder.com/...” or random Lorem Picsum with no seed.
-- If the user mentions explicit image topics, use exactly those topics as keywords.
-- Guarantee every image is unique and topical by adjusting the keywords appropriately.
-`;
+  const noPromptAlert =
+    "- **NEVER** use `prompt()`, `alert()`, `document.write()`, `<input>`, `<textarea>`, or `contenteditable` unless explicitly asked for a form. For games, avoid them entirely.";
+
+  // ---------- RESTORED IMAGE RULES ----------
+  const imageRules = `
+🖼️ **IMAGE RULES (CRITICAL – FOLLOW EXACTLY)**:
+- Images MUST be absolute URLs.
+- **Choose images that match the page’s theme** (e.g., food for restaurants, technology for startups, nature for camping). Do NOT use completely random images.
+- Use one of these services with **specific identifiers** to reflect the context:
+  1. Unsplash (preferred): \`https://images.unsplash.com/photo-{PHOTO_ID}?w=WIDTH&h=HEIGHT\`
+     Example: for a coffee shop, use photo‑ID \`1414235077428-338989a2e8c0\` (coffee).
+     Use your knowledge of real Unsplash photo IDs.
+  2. Picsum with seed: \`https://picsum.photos/seed/{DESCRIPTIVE_WORD}/400/300\`
+     The seed ensures a consistent, thematic image.
+  3. Placeholder with text: \`https://via.placeholder.com/400x300?text=Your+Text\`
+- The filename alone determines the image; ensure the URL is directly viewable. 
+- **NEVER** use local paths like \`"/img/hero.jpg"\` or \`"./photo.png"\`.
+- If you are unsure of a specific photo ID, use a descriptive seed with picsum (e.g., \`seed=coffeeshop\`).`;
 
   if (isGenerate) {
     return `You are a world‑class web designer.
-Create a **complete, ready‑to‑publish HTML page**.
+Create a **complete, ready‑to‑publish HTML page** based on the user's request.
 
-Response: ONLY a JSON object:
-{ "code": "<full HTML>", "description": "short summary" }
+Response format: ONLY a JSON object:
+{ "code": "<full HTML from <!DOCTYPE html> to </html>>", "description": "short summary" }
 
 ${layoutInstructions}
 ${gameInstructions}
+${complexityInstructions}
 ${noPromptAlert}
-${imageInstructions}
+
+${imageRules}
 
 **CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
-- If your page contains **any buttons, clickable elements, or game interactions**, you MUST add actual JavaScript event listeners (addEventListener, onclick, etc.) that make them fully functional.
-- For games: implement **all** game logic, scoring, win/lose conditions, and a restart mechanism.
-- **No placeholder alerts** – actions must visibly update the page.
-- Test your code mentally: clicking a button must produce an immediate, visible effect.
-- **Never use onclick="null" or empty handlers.**
+- Any buttons or interactive elements must have working event listeners (addEventListener, onclick).
+- For games: implement full logic, scoring, win/loss, and restart.
+- Clicking a button must produce a visible result immediately.
 
 **REQUIREMENTS**:
 - Real content, no lorem ipsum.
-- Images: use the context-sensitive unsplash URLs as described.
+- If a **game**, it must be playable right away.
 - Your entire message must start with { and end with }. No markdown, no commentary.`;
   } else {
     return `You are an expert front‑end developer.
-The current sandbox page:
+The current sandbox page content is:
+
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
 
-Write a **JavaScript snippet** that runs inside the sandbox to fulfill the user's request.
-- Always access the iframe’s document via:
+Write a **JavaScript snippet** that modifies or extends the page to satisfy the user's request.
+- Access the iframe’s document via:
     const iframe = document.getElementById('sandbox-iframe');
     const doc = iframe.contentDocument;
-- Use stable DOM methods only.
+- Use stable DOM methods.
 ${noPromptAlert}
 ${layoutInstructions}
 ${gameInstructions}
-${imageInstructions}
+${complexityInstructions}
 
-**CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
-- Any added buttons/elements must respond immediately to clicks/touches.
-- Implement all requested interactions – no empty handlers.
+${imageRules}
+
+**INTERACTIVITY RULES:**
+- Any added buttons/elements must respond to clicks/touches.
 
 Response: ONLY a JSON object:
 {"code": "pure JS", "description": "one line summary"}
@@ -196,6 +201,7 @@ app.post("/chat", async (req, res) => {
       messages,
       mode = "edit",
       sandboxHTML = "",
+      complexity = "simple",
       device = "desktop",
     } = req.body;
     if (!messages || !Array.isArray(messages)) {
@@ -205,12 +211,17 @@ app.post("/chat", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
-    // Advanced‑only token limits
-    const maxTokens = mode === "generate" ? 6000 : 2000;
+    let maxTokens;
+    if (complexity === "simple") {
+      maxTokens = mode === "generate" ? 5000 : 1500;
+    } else {
+      maxTokens = mode === "generate" ? 6000 : 2000;
+    }
 
     const systemContent = buildSystemPrompt(
       mode,
       sandboxHTML,
+      complexity,
       device,
       userMessage,
     );
@@ -260,6 +271,7 @@ app.post("/chat/stream", async (req, res) => {
       messages,
       mode = "edit",
       sandboxHTML = "",
+      complexity = "simple",
       device = "desktop",
     } = req.body;
     if (!messages || !Array.isArray(messages)) {
@@ -269,12 +281,17 @@ app.post("/chat/stream", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
-    // Advanced‑only token limits
-    const maxTokens = mode === "generate" ? 6000 : 2000;
+    let maxTokens;
+    if (complexity === "simple") {
+      maxTokens = mode === "generate" ? 5000 : 1500;
+    } else {
+      maxTokens = mode === "generate" ? 6000 : 2000;
+    }
 
     const systemContent = buildSystemPrompt(
       mode,
       sandboxHTML,
+      complexity,
       device,
       userMessage,
     );
@@ -347,7 +364,7 @@ app.post("/ask", async (req, res) => {
 
     const systemMessage = {
       role: "system",
-      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Do NOT include any code in your answer unless explicitly asked; provide clear, concise explanations.`,
+      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Do NOT include code unless asked.`,
     };
 
     const completion = await client.chat.completions.create({
@@ -366,7 +383,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v9 (advanced only + context images) is running."),
+  res.send("AI Backend v9 (thematic images restored) is running."),
 );
 
 // --------------- Start server ---------------
