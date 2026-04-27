@@ -75,13 +75,12 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (FIXED & ENHANCED) ---------------
+// --------------- Helper: build system prompt (ENHANCED) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
   const isSimple = complexity === "simple";
 
-  // Detect game
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
     lowerMsg.includes("game") ||
@@ -102,7 +101,7 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   * **Absolutely no horizontal scrollbars.**
 `;
   } else {
-    layoutInstructions = `- **Desktop layout** - responsive, but secondary mobile support.`;
+    layoutInstructions = `- **Desktop layout** - responsive, secondary mobile support.`;
   }
 
   let gameInstructions = "";
@@ -139,6 +138,13 @@ ${gameInstructions}
 ${complexityInstructions}
 ${noPromptAlert}
 
+**CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
+- If your page contains **any buttons, clickable elements, or game interactions**, you MUST add actual JavaScript event listeners (addEventListener, onclick, etc.) that make them fully functional.
+- For games: implement **all** game logic, scoring, win/lose conditions, and a restart mechanism.
+- **No placeholder alerts** – actions must visibly update the page.
+- Test your code mentally: clicking a button must produce an immediate, visible effect.
+- **Never use onclick="null" or empty handlers.**
+
 **REQUIREMENTS**:
 - Real content, no lorem ipsum.
 - Images: absolute URLs like \`https://picsum.photos/WIDTH/HEIGHT\`.
@@ -160,6 +166,10 @@ ${noPromptAlert}
 ${layoutInstructions}
 ${gameInstructions}
 ${complexityInstructions}
+
+**CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
+- Any added buttons/elements must respond immediately to clicks/touches.
+- Implement all requested interactions – no empty handlers.
 
 Response: ONLY a JSON object:
 {"code": "pure JS", "description": "one line summary"}
@@ -189,7 +199,7 @@ app.post("/chat", async (req, res) => {
 
     let maxTokens;
     if (complexity === "simple") {
-      maxTokens = mode === "generate" ? 4000 : 1500; // increased
+      maxTokens = mode === "generate" ? 5000 : 1500; // increased
     } else {
       maxTokens = mode === "generate" ? 6000 : 2000;
     }
@@ -259,7 +269,7 @@ app.post("/chat/stream", async (req, res) => {
 
     let maxTokens;
     if (complexity === "simple") {
-      maxTokens = mode === "generate" ? 4000 : 1500; // increased
+      maxTokens = mode === "generate" ? 5000 : 1500; // increased
     } else {
       maxTokens = mode === "generate" ? 6000 : 2000;
     }
@@ -359,7 +369,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v7 (fixed games & mobile layout) is running."),
+  res.send("AI Backend v8 (fixed buttons, games, mobile UI) is running."),
 );
 
 // --------------- Start server ---------------
