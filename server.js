@@ -1,4 +1,4 @@
-// server.js – AI backend for Render (full CORS, streaming + non‑streaming)
+// server.js – AI backend for Render (full CORS, streaming + non‑streaming, debug pass)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -81,7 +81,6 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isMobile = device === "mobile";
   const isSimple = complexity === "simple";
 
-  // Detect if the user wants a game
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
     lowerMsg.includes("game") ||
@@ -93,36 +92,39 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   let layoutInstructions = "";
   if (isMobile) {
     layoutInstructions = `
-- **CRITICAL: STRICT VERTICAL MOBILE LAYOUT**  
-  * The entire page must be a **single vertical column** that fits a phone screen without any horizontal scrolling.  
-  * Use \`max-width: 100vw; overflow-x: hidden; box-sizing: border-box;\` on body and all containers.  
-  * No fixed widths wider than the viewport – all widths must be in percentages or \`100%\`.  
-  * Avoid CSS Grid with large fixed columns; use flexbox with \`flex-direction: column\` and \`flex-wrap: wrap\` only if absolutely necessary.  
-  * All content, images, and buttons must resize to fit the screen.  
-  * Touch targets at least 44×44px.  
+- **CRITICAL: STRICT MOBILE VERTICAL LAYOUT**
+  * The page MUST be a single vertical column fitting a phone screen (375-414px wide target). No horizontal scrolling whatsoever.
+  * Use \`max-width: 100vw; overflow-x: hidden; box-sizing: border-box;\` on body and all containers.
+  * Absolutely NO fixed pixel widths wider than the viewport. Use percentages or \`100%\`.
+  * Avoid CSS Grid with large fixed columns; use flexbox with \`flex-direction: column\`.
+  * All images and iframes must be \`max-width: 100%\`.
+  * Touch targets must be at least 44×44px.
+  * No hover‑dependent interactions – use click/active events only.
+  * Never use \`:hover\` for critical functionality.
 `;
   } else {
     layoutInstructions = `
-- **Desktop layout**: Use responsive design that adapts to wider screens, but support mobile as a secondary priority.`;
+- **DESKTOP LAYOUT**: Optimize for wide screens (1024px+). Use mouse interactions (hover, pointer) and responsive design that still works on smaller viewports, but desktop is the primary target.
+`;
   }
 
   let gameInstructions = "";
   if (isGame) {
     gameInstructions = `
-- **YOU ARE BUILDING A GAME, NOT A MULTI‑SECTION WEBSITE.**  
-  * The entire page must be a **single gameplay screen** – no header, no navigation, no sections like “home”, “contact”, “about”.  
-  * Only the game itself (canvas, board, buttons, score, restart) should exist.  
-  * The layout must be clean and focused on the game mechanics.  
+- **YOU ARE BUILDING A GAME, NOT A WEBSITE.**
+  * The entire page must be a single gameplay screen – no header, no navigation, no sections like “home”, “contact”, “about”.
+  * Only the game itself (canvas, board, buttons, score, restart) should exist.
+  * Keep the layout minimal and focused.
 `;
   } else {
     gameInstructions = `
-- **If the request is for a standard website**, include a proper <header>, <main> with sections (hero, features, about, contact, footer), and navigation.`;
+- **If the request is for a standard website**, include a proper <header>, <main> with sections (hero, features, about, contact, footer), and navigation.
+`;
   }
 
-  let complexityInstructions =
-    complexity === "simple"
-      ? `- **Simple Mode**: Keep code minimal but fully functional. Skip decorative extras, but all game logic/interactions must work perfectly.`
-      : `- **Advanced Mode**: Feel free to add richer styling and animations while keeping everything working.`;
+  let complexityInstructions = isSimple
+    ? `- **Simple Mode**: Keep code minimal but fully functional. Skip decorative extras, but all game logic/interactions must work perfectly.`
+    : `- **Advanced Mode**: Feel free to add richer styling and animations while keeping everything working.`;
 
   if (isGenerate) {
     return `You are a world‑class web designer and front‑end developer.
@@ -344,6 +346,71 @@ app.post("/chat/stream", async (req, res) => {
 });
 
 // ============================
+//  POST /debug – Review & fix generated code
+// ============================
+app.post("/debug", async (req, res) => {
+  try {
+    const { code, mode, device, originalRequest } = req.body;
+    if (!code) return res.status(400).json({ error: "code required" });
+
+    const isMobile = device === "mobile";
+    const deviceTarget = isMobile
+      ? "mobile (strict vertical layout, no hover, touch‑friendly)"
+      : "desktop (wide screens, mouse interactions)";
+
+    const systemContent = `You are a senior QA engineer and front‑end fixer.
+You are given a piece of code (${mode === "generate" ? "full HTML page" : "JavaScript snippet"}) that was generated for a **${deviceTarget}** experience.
+
+Original request: "${originalRequest || "not provided"}"
+
+Your job:
+1. Carefully review the code for any bugs, missing functionality, or elements that do not properly respect the device target.
+2. For mobile: ensure absolutely no hover‑dependent interactions, no horizontal overflow, all touch targets are large, layout is single column.
+3. For desktop: ensure hover effects work, layout is appropriate for wide screens.
+4. Fix any broken game logic, CSS issues, missing event handlers, or non‑functional parts.
+5. Do NOT redesign the page; only fix what is broken or non‑compliant.
+
+Return a JSON object: { "code": "<fixed code>", "description": "short summary of changes" }.
+If nothing needed fixing, return the original code with description "No issues found."
+Your entire message must start with { and end with }. No markdown.`;
+
+    const completion = await client.chat.completions.create({
+      model: "deepseek/deepseek-v4-flash",
+      messages: [
+        { role: "system", content: systemContent },
+        { role: "user", content: code },
+      ],
+      temperature: 0.1,
+      max_tokens: mode === "generate" ? 6000 : 2000,
+      response_format: { type: "json_object" },
+    });
+
+    const text = completion.choices[0].message.content;
+    const parsed = extractJSON(text);
+
+    if (parsed && typeof parsed.code === "string") {
+      return res.json({
+        code: parsed.code,
+        description: parsed.description || "Debug complete.",
+      });
+    } else {
+      // Fallback: return original
+      return res.json({
+        code,
+        description: "Debug skipped (invalid AI response).",
+      });
+    }
+  } catch (err) {
+    console.error("/debug error:", err);
+    // If debug fails, return original code so the user can still see something
+    return res.json({
+      code: req.body.code || "",
+      description: "Debug failed, using original.",
+    });
+  }
+});
+
+// ============================
 //  POST /ask – Page assistant (unchanged)
 // ============================
 app.post("/ask", async (req, res) => {
@@ -372,7 +439,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v6 (strict mobile + game mode) is running."),
+  res.send("AI Backend v7 (strict device + debug pass) is running."),
 );
 
 // --------------- Start server ---------------
