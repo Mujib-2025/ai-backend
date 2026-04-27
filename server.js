@@ -76,45 +76,57 @@ function extractCodeFromRawText(text, mode) {
 }
 
 // --------------- Helper: build system prompt ---------------
-function buildSystemPrompt(mode, sandboxHTML, complexity, device) {
+function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
   const isSimple = complexity === "simple";
 
-  let deviceGuidelines = "";
+  // Detect if the user wants a game
+  const lowerMsg = (userMessage || "").toLowerCase();
+  const isGame =
+    lowerMsg.includes("game") ||
+    lowerMsg.includes("play") ||
+    lowerMsg.includes("tic") ||
+    lowerMsg.includes("snake") ||
+    lowerMsg.includes("puzzle");
+
+  let layoutInstructions = "";
   if (isMobile) {
-    deviceGuidelines = `
-**DEVICE TARGET: MOBILE (strict)**
-- Design for a vertical single‑column layout. The page must not scroll horizontally.
-- Use 'max-width: 100%; overflow-x: hidden;' on the body / main container.
-- All interactive elements must have minimum touch targets of 44x44px.
-- No hover‑only interactions – use click/active states instead.
-- Font sizes should be legible on small screens (16px minimum for body text).
-- The layout should feel like a native mobile experience, not a scaled‑down desktop page.
-- Use flex‑box or grid with 'flex-wrap: wrap' only if absolutely necessary, avoid creating wide content.
+    layoutInstructions = `
+- **CRITICAL: STRICT VERTICAL MOBILE LAYOUT**  
+  * The entire page must be a **single vertical column** that fits a phone screen without any horizontal scrolling.  
+  * Use \`max-width: 100vw; overflow-x: hidden; box-sizing: border-box;\` on body and all containers.  
+  * No fixed widths wider than the viewport – all widths must be in percentages or \`100%\`.  
+  * Avoid CSS Grid with large fixed columns; use flexbox with \`flex-direction: column\` and \`flex-wrap: wrap\` only if absolutely necessary.  
+  * All content, images, and buttons must resize to fit the screen.  
+  * Touch targets at least 44×44px.  
 `;
   } else {
-    deviceGuidelines = `
-**DEVICE TARGET: DESKTOP**
-- Optimise for wider screens (1024px+), mouse interactions, and hover effects.
-- Use responsive design that still adapts to smaller viewports, but the primary focus is desktop.
-`;
+    layoutInstructions = `
+- **Desktop layout**: Use responsive design that adapts to wider screens, but support mobile as a secondary priority.`;
   }
 
-  let complexityGuidelines = "";
-  if (isSimple) {
-    complexityGuidelines = `
-**QUALITY: SIMPLE MODE**
-- Generate a **lightweight, minimal** page. Use only essential CSS and clean, short JS.
-- **BUT:** All requested functionality MUST work perfectly. Game logic, buttons, form handling – everything must be fully operational.
-- Prioritise working code over decoration. Fancy animations or extra sections may be omitted.
-- Keep total code concise – aim for the smallest possible size while remaining functional.
+  let gameInstructions = "";
+  if (isGame) {
+    gameInstructions = `
+- **YOU ARE BUILDING A GAME, NOT A MULTI‑SECTION WEBSITE.**  
+  * The entire page must be a **single gameplay screen** – no header, no navigation, no sections like “home”, “contact”, “about”.  
+  * Only the game itself (canvas, board, buttons, score, restart) should exist.  
+  * The layout must be clean and focused on the game mechanics.  
 `;
+  } else {
+    gameInstructions = `
+- **If the request is for a standard website**, include a proper <header>, <main> with sections (hero, features, about, contact, footer), and navigation.`;
   }
+
+  let complexityInstructions =
+    complexity === "simple"
+      ? `- **Simple Mode**: Keep code minimal but fully functional. Skip decorative extras, but all game logic/interactions must work perfectly.`
+      : `- **Advanced Mode**: Feel free to add richer styling and animations while keeping everything working.`;
 
   if (isGenerate) {
     return `You are a world‑class web designer and front‑end developer.
-You create **complete, production‑ready, multi‑section websites or fully functional games** (HTML, CSS, JS) based on the user's request.
+You create **complete, production‑ready HTML pages** based on the user's request.
 
 Your response must be a single JSON object with this exact structure and nothing else:
 {
@@ -124,18 +136,16 @@ Your response must be a single JSON object with this exact structure and nothing
 
 **CRITICAL:** Your entire message must start with { and end with }. No introductory text, no markdown fences, no commentary. Just the raw JSON.
 
-${deviceGuidelines}
-${complexityGuidelines}
+${layoutInstructions}
+
+${gameInstructions}
+
+${complexityInstructions}
 
 **ABSOLUTE REQUIREMENTS** (the page must be ready to publish immediately):
-- **Real content:** No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
-- **Complete website structure:** Include a proper <header> (with logo and navigation), a <main> area with several meaningful sections (hero, features, about, services/projects, contact, footer), and a well‑styled <footer>.
-- **Working navigation:** Internal links (href="#section") must scroll smoothly; external links (if any) must use valid placeholders like "#".
-- **Responsive design:** Use modern CSS (grid/flexbox, media queries) so the layout works perfectly on mobile, tablet, and desktop, but with primary focus on the device target.
-- **Interactive elements:** Buttons, forms, sliders, or cards must have functional event handlers. For a game, include game logic, scoring, win/loss conditions, restart, and appropriate UI.
-- **SEO basics:** Add a descriptive <title>, <meta name="description">, and semantic HTML5 tags.
-- **Images:** Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\` or \`https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT\`. No local paths.
-- **Performance:** Keep total size under ${isSimple ? 3000 : 6000} tokens.
+- **Real content:** No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section if applicable.
+- Images: Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\`. No local paths.
+- SEO basics: Add a descriptive <title> and <meta name="description">.
 
 Remember: return ONLY the JSON object, no markdown wrapping.`;
   } else {
@@ -157,8 +167,11 @@ Your task: **write a JavaScript snippet that modifies or extends the sandbox** t
 - Do NOT use alert, prompt, or document.write.
 - For images, use absolute URLs like \`https://picsum.photos/400/300\`. Never local paths.
 
-${deviceGuidelines}
-${complexityGuidelines}
+${layoutInstructions}
+
+${gameInstructions}
+
+${complexityInstructions}
 
 **Your response must be a single JSON object with this exact structure and nothing else:**
 {"code": "the JavaScript code", "description": "one sentence summary of what was done"}
@@ -184,7 +197,9 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
-    // Increased token budgets for simple mode to allow functionality
+    const userMessage =
+      messages.length > 0 ? messages[messages.length - 1].content : "";
+
     let maxTokens;
     if (complexity === "simple") {
       maxTokens = mode === "generate" ? 3000 : 1000;
@@ -197,6 +212,7 @@ app.post("/chat", async (req, res) => {
       sandboxHTML,
       complexity,
       device,
+      userMessage,
     );
     const temperature = mode === "generate" ? 0.2 : 0.3;
 
@@ -251,6 +267,9 @@ app.post("/chat/stream", async (req, res) => {
       return res.status(400).json({ error: "messages array required" });
     }
 
+    const userMessage =
+      messages.length > 0 ? messages[messages.length - 1].content : "";
+
     let maxTokens;
     if (complexity === "simple") {
       maxTokens = mode === "generate" ? 3000 : 1000;
@@ -263,6 +282,7 @@ app.post("/chat/stream", async (req, res) => {
       sandboxHTML,
       complexity,
       device,
+      userMessage,
     );
     const temperature = mode === "generate" ? 0.2 : 0.3;
 
@@ -352,7 +372,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v5 (mobile strict + simple functional) is running."),
+  res.send("AI Backend v6 (strict mobile + game mode) is running."),
 );
 
 // --------------- Start server ---------------
