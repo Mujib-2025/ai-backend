@@ -1,4 +1,4 @@
-// server.js – AI backend for Render (full CORS, no timeout)
+// server.js – AI backend for Render (streaming real-time status, JSON enforced)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -28,18 +28,15 @@ const client = new OpenAI({
 
 // --------------- Helper: extract JSON from AI response ---------------
 function extractJSON(text) {
-  // First try direct parse (should succeed with response_format: json_object)
   try {
     return JSON.parse(text);
   } catch (e) {
-    // Fallback: strip markdown fences and attempt to find a JSON object
     let cleaned = text
       .replace(/```json\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```html\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```javascript\s*([\s\S]*?)\s*```/g, "$1")
-      .replace(/```\s*([\s\S]*?)\s*```/g, "$1") // any other code fence
+      .replace(/```\s*([\s\S]*?)\s*```/g, "$1")
       .trim();
-
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
     if (start !== -1 && end !== -1 && end > start) {
@@ -47,7 +44,6 @@ function extractJSON(text) {
       try {
         return JSON.parse(cleaned);
       } catch (e2) {
-        // Try replacing single quotes (common AI mistake)
         try {
           return JSON.parse(cleaned.replace(/'/g, '"'));
         } catch (e3) {
@@ -59,12 +55,50 @@ function extractJSON(text) {
   }
 }
 
+// ---------- Real-time status inference ----------
+function inferStatus(textSoFar) {
+  // Infer current building phase based on partial code content
+  const t = textSoFar.toLowerCase();
+  if (t.includes("<!doctype html") || t.includes("<html"))
+    return "Structuring HTML document…";
+  if (t.includes("<head>")) return "Setting up metadata and links…";
+  if (
+    t.includes("<style>") ||
+    t.includes("style>") ||
+    t.includes("font-family")
+  )
+    return "Adding CSS styling…";
+  if (t.includes("</style>")) return "Styling almost complete…";
+  if (t.includes("<body")) return "Building body layout…";
+  if (t.includes("<header") || t.includes("<nav"))
+    return "Crafting header and navigation…";
+  if (t.includes("<section") || t.includes("<main"))
+    return "Assembling page sections…";
+  if (t.includes("<footer")) return "Finishing footer…";
+  if (t.includes("<script>") || t.includes("function "))
+    return "Implementing JavaScript logic…";
+  if (t.includes("</script>")) return "Finalizing scripts…";
+  if (t.includes("</html>")) return "Wrapping up…";
+  // For game / interactive elements
+  if (t.includes("game") || t.includes("board") || t.includes("score"))
+    return "Building game mechanics…";
+  if (t.includes("addEventListener") || t.includes("onclick"))
+    return "Hooking up event listeners…";
+  // Default
+  return "Generating code…";
+}
+
 // ============================
-//  POST /chat – Build / Edit
+//  POST /chat – Build / Edit (with optional SSE streaming)
 // ============================
 app.post("/chat", async (req, res) => {
   try {
-    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
+    const {
+      messages,
+      mode = "edit",
+      sandboxHTML = "",
+      stream = false,
+    } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array required" });
     }
@@ -72,7 +106,6 @@ app.post("/chat", async (req, res) => {
     let systemContent, temperature, maxTokens;
 
     if (mode === "generate") {
-      // --------- ENHANCED PROMPT FOR LAUNCH-READY SITES/GAMES ---------
       systemContent = `You are a world‑class web designer and front‑end developer.
 You create **complete, production‑ready, multi‑section websites or fully functional games** (HTML, CSS, JS) based on the user's request.
 
@@ -82,24 +115,19 @@ Your output must be a single JSON object with the following structure:
   "description": "a short, friendly summary of what you built"
 }
 
-**ABSOLUTE REQUIREMENTS** (the page must be ready to publish immediately):
-- **Real content:** No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
-- **Complete website structure:** Include a proper <header> (with logo and navigation), a <main> area with several meaningful sections (hero, features, about, services/projects, contact, footer), and a well‑styled <footer>.
-- **Working navigation:** Internal links (href="#section") must scroll smoothly; external links (if any) must use valid placeholders like "#".
-- **Responsive design:** Use modern CSS (grid/flexbox, media queries) so the layout works perfectly on mobile, tablet, and desktop.
-- **Interactive elements:** Buttons, forms, sliders, or cards must have functional event handlers. For a game, include game logic, scoring, win/loss conditions, restart, and appropriate UI.
-- **SEO basics:** Add a descriptive <title>, <meta name="description">, and semantic HTML5 tags.
-- **Images:** Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\` or \`https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT\`. No local paths.
-- **Performance:** Keep total size under 6000 tokens (the code may be longer than usual – that's okay).
+Requirements (the page must be ready to publish immediately):
+- Real content: No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
+- Complete website structure: header, navigation, several meaningful sections, footer.
+- Working navigation, responsive design (mobile, tablet, desktop), interactive elements.
+- For games: full game logic, scoring, win/loss, restart.
+- SEO basics: descriptive title, meta description, semantic tags.
+- Images: absolute URLs (e.g., https://picsum.photos/…).
+- Performance: keep code under 6000 tokens.
 
-Example for a game: a fully playable Tic‑Tac‑Toe with player/computer turns, score tracking, and a reset button.
-Example for a portfolio site: hero image, about, skills, projects, contact form, and a sticky navbar.
-
-Return **only** the JSON object. Do NOT wrap it in markdown.`;
-      temperature = 0.2; // more deterministic
-      maxTokens = 6000; // sufficient for rich pages
+Return **only** the JSON object. No markdown.`;
+      temperature = 0.2;
+      maxTokens = 6000;
     } else {
-      // --------- ENHANCED EDIT MODE PROMPT ---------
       systemContent = `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
 The current page content is:
 
@@ -118,10 +146,10 @@ Your task: **write a JavaScript snippet that modifies or extends the sandbox** t
 - Do NOT use alert, prompt, or document.write.
 - For images, use absolute URLs like \`https://picsum.photos/400/300\`. Never local paths.
 
-**Your response must be a single JSON object:**
+Your response must be a single JSON object:
 {"code": "the JavaScript code", "description": "one sentence summary of what was done"}
 
-- The "code" field must contain only executable JavaScript (no markdown, no HTML wrapping). Do NOT include \`\`\`javascript fences.
+- The "code" field must contain only executable JavaScript (no markdown, no HTML wrapping).
 - The "description" is for the log; make it short and human‑friendly.
 
 Return **only** the JSON object.`;
@@ -129,16 +157,91 @@ Return **only** the JSON object.`;
       maxTokens = 1500;
     }
 
+    // ---------- STREAMING BRANCH ----------
+    if (stream) {
+      // Set SSE headers
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no", // helpful for nginx/proxy
+      });
+
+      const sendSSE = (data) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      let fullText = "";
+      let lastStatus = "Starting…";
+      sendSSE({ type: "status", message: lastStatus });
+
+      // Use OpenAI streaming
+      const completion = await client.chat.completions.create({
+        model: "deepseek/deepseek-v4-flash",
+        messages: [{ role: "system", content: systemContent }, ...messages],
+        temperature,
+        max_tokens: maxTokens,
+        response_format: { type: "json_object" },
+        stream: true, // enable streaming
+      });
+
+      // Periodic heartbeat (every 8 sec) to keep UI fresh
+      const heartbeat = setInterval(() => {
+        // Only send if connection is still open
+        if (!res.writableEnded) {
+          sendSSE({ type: "status", message: lastStatus });
+        } else {
+          clearInterval(heartbeat);
+        }
+      }, 8000);
+
+      // Process stream chunks
+      for await (const part of completion) {
+        const content = part.choices[0]?.delta?.content || "";
+        if (content) {
+          fullText += content;
+          const newStatus = inferStatus(fullText);
+          if (newStatus !== lastStatus) {
+            lastStatus = newStatus;
+            sendSSE({ type: "status", message: lastStatus });
+          }
+        }
+      }
+
+      clearInterval(heartbeat);
+
+      // Parse the final JSON and send result
+      const parsed = extractJSON(fullText);
+      if (parsed && parsed.code && parsed.description) {
+        sendSSE({
+          type: "result",
+          code: parsed.code,
+          description: parsed.description,
+        });
+      } else {
+        // In case parsing fails, still send the raw text as description
+        sendSSE({
+          type: "result",
+          code: null,
+          description: fullText || "Could not generate a valid response.",
+        });
+      }
+
+      res.end();
+      return;
+    }
+
+    // ---------- NON‑STREAMING BRANCH (original behavior) ----------
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash", // also supports "deepseek/deepseek-chat"
+      model: "deepseek/deepseek-v4-flash",
       messages: [{ role: "system", content: systemContent }, ...messages],
       temperature,
       max_tokens: maxTokens,
-      response_format: { type: "json_object" }, // <-- forces valid JSON
+      response_format: { type: "json_object" },
+      stream: false,
     });
 
     const text = completion.choices[0].message.content;
-    // With response_format: json_object, the content should be parseable as JSON immediately
     const parsed = extractJSON(text);
 
     if (
@@ -148,7 +251,6 @@ Return **only** the JSON object.`;
     ) {
       return res.json({ code: parsed.code, description: parsed.description });
     } else {
-      // Fallback: send the raw text as description, but this should rarely happen now.
       return res.json({
         code: null,
         description: text || "Invalid response format.",
@@ -156,14 +258,16 @@ Return **only** the JSON object.`;
     }
   } catch (err) {
     console.error("/chat error:", err);
-    res
-      .status(500)
-      .json({ code: null, description: "Server error: " + err.message });
+    if (!res.headersSent) {
+      res
+        .status(500)
+        .json({ code: null, description: "Server error: " + err.message });
+    }
   }
 });
 
 // ============================
-//  POST /ask – Page assistant
+//  POST /ask – Page assistant (unchanged, but safe)
 // ============================
 app.post("/ask", async (req, res) => {
   try {
@@ -174,7 +278,7 @@ app.post("/ask", async (req, res) => {
 
     const systemMessage = {
       role: "system",
-      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Do NOT include any code in your answer unless explicitly asked; provide clear, concise explanations.`,
+      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Keep answers clear and concise.`,
     };
 
     const completion = await client.chat.completions.create({
@@ -182,23 +286,9 @@ app.post("/ask", async (req, res) => {
       messages: [systemMessage, { role: "user", content: question }],
       temperature: 0.7,
       max_tokens: 800,
-      response_format: { type: "json_object" },
     });
 
-    let reply;
-    try {
-      // The assistant is asked to return a JSON, but we'll try to extract a "reply" field.
-      const data = JSON.parse(completion.choices[0].message.content);
-      reply =
-        data.reply ||
-        data.answer ||
-        data.response ||
-        "Here's what I think: " + completion.choices[0].message.content;
-    } catch {
-      reply = completion.choices[0].message.content;
-    }
-
-    res.json({ reply });
+    res.json({ reply: completion.choices[0].message.content });
   } catch (err) {
     console.error("/ask error:", err);
     res.status(500).json({ reply: "Sorry, something went wrong." });
@@ -206,9 +296,7 @@ app.post("/ask", async (req, res) => {
 });
 
 // --------------- Health check ---------------
-app.get("/", (req, res) =>
-  res.send("AI Backend (v2 – launch-ready) is running."),
-);
+app.get("/", (req, res) => res.send("AI Backend (streaming) is running."));
 
 // --------------- Start server ---------------
 const PORT = process.env.PORT || 3000;
