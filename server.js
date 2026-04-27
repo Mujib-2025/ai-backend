@@ -1,4 +1,4 @@
-// server.js – AI backend for Render (streaming real-time status, JSON enforced)
+// server.js – AI backend for Render (streaming with AI‑generated live status)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -55,41 +55,8 @@ function extractJSON(text) {
   }
 }
 
-// ---------- Real-time status inference ----------
-function inferStatus(textSoFar) {
-  // Infer current building phase based on partial code content
-  const t = textSoFar.toLowerCase();
-  if (t.includes("<!doctype html") || t.includes("<html"))
-    return "Structuring HTML document…";
-  if (t.includes("<head>")) return "Setting up metadata and links…";
-  if (
-    t.includes("<style>") ||
-    t.includes("style>") ||
-    t.includes("font-family")
-  )
-    return "Adding CSS styling…";
-  if (t.includes("</style>")) return "Styling almost complete…";
-  if (t.includes("<body")) return "Building body layout…";
-  if (t.includes("<header") || t.includes("<nav"))
-    return "Crafting header and navigation…";
-  if (t.includes("<section") || t.includes("<main"))
-    return "Assembling page sections…";
-  if (t.includes("<footer")) return "Finishing footer…";
-  if (t.includes("<script>") || t.includes("function "))
-    return "Implementing JavaScript logic…";
-  if (t.includes("</script>")) return "Finalizing scripts…";
-  if (t.includes("</html>")) return "Wrapping up…";
-  // For game / interactive elements
-  if (t.includes("game") || t.includes("board") || t.includes("score"))
-    return "Building game mechanics…";
-  if (t.includes("addEventListener") || t.includes("onclick"))
-    return "Hooking up event listeners…";
-  // Default
-  return "Generating code…";
-}
-
 // ============================
-//  POST /chat – Build / Edit (with optional SSE streaming)
+//  POST /chat – Build / Edit
 // ============================
 app.post("/chat", async (req, res) => {
   try {
@@ -105,113 +72,130 @@ app.post("/chat", async (req, res) => {
 
     let systemContent, temperature, maxTokens;
 
-    if (mode === "generate") {
-      systemContent = `You are a world‑class web designer and front‑end developer.
+    // ---------- Prepare system prompt (same as before but for streaming we add special instructions) ----------
+    const baseGeneratePrompt = `You are a world‑class web designer and front‑end developer.
 You create **complete, production‑ready, multi‑section websites or fully functional games** (HTML, CSS, JS) based on the user's request.
 
-Your output must be a single JSON object with the following structure:
+Your final output must be a JSON object:
 {
   "code": "<full HTML page from <!DOCTYPE html> to </html>>",
-  "description": "a short, friendly summary of what you built"
+  "description": "a short friendly summary of what you built"
 }
 
-Requirements (the page must be ready to publish immediately):
-- Real content: No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
-- Complete website structure: header, navigation, several meaningful sections, footer.
-- Working navigation, responsive design (mobile, tablet, desktop), interactive elements.
-- For games: full game logic, scoring, win/loss, restart.
-- SEO basics: descriptive title, meta description, semantic tags.
-- Images: absolute URLs (e.g., https://picsum.photos/…).
-- Performance: keep code under 6000 tokens.
+Requirements: real content, complete sections, responsive, interactive, SEO, images with absolute URLs.`;
 
-Return **only** the JSON object. No markdown.`;
-      temperature = 0.2;
-      maxTokens = 6000;
-    } else {
-      systemContent = `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
+    const baseEditPrompt = `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
 The current page content is:
 
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
 
-Your task: **write a JavaScript snippet that modifies or extends the sandbox** to fulfill the user's request.
-- The JavaScript will run inside the sandbox (which contains an iframe with id "sandbox-iframe").
-  To access the page inside, always use:
-    const iframe = document.getElementById('sandbox-iframe');
-    const doc = iframe.contentDocument;
-  and then manipulate the iframe's document.
-- Preserve all existing elements unless the user explicitly asks to remove/replace something.
-- Use only stable DOM methods (querySelector, createElement, appendChild, classList, etc.).
-- Do NOT use alert, prompt, or document.write.
-- For images, use absolute URLs like \`https://picsum.photos/400/300\`. Never local paths.
+Your task: **write a JavaScript snippet that modifies or extends the sandbox**.
+- Use document.getElementById('sandbox-iframe') and its contentDocument.
+- Preserve existing elements, use stable DOM methods.
+- For images, absolute URLs like https://picsum.photos/400/300.
+- Return a JSON object: {"code": "the JavaScript", "description": "what you did"}.
+- The "code" field must be pure JS, no markdown.`;
 
-Your response must be a single JSON object:
-{"code": "the JavaScript code", "description": "one sentence summary of what was done"}
-
-- The "code" field must contain only executable JavaScript (no markdown, no HTML wrapping).
-- The "description" is for the log; make it short and human‑friendly.
-
-Return **only** the JSON object.`;
-      temperature = 0.3;
-      maxTokens = 1500;
-    }
-
-    // ---------- STREAMING BRANCH ----------
+    // ---------- STREAMING MODE ----------
     if (stream) {
+      // Build the system prompt that tells the model how to output status + code
+      let streamingInstructions = "";
+      if (mode === "generate") {
+        systemContent = `${baseGeneratePrompt}
+
+**Streaming output instructions (IMPORTANT):**
+You will output your response as a series of lines.
+- Whenever you want to inform the user about what part you are currently working on, output a line EXACTLY like:
+  STATUS: your short, human‑readable status update here
+- For actual code, output lines prefixed with:
+  CODE: the JSON line here
+- You may output both STATUS and CODE lines freely as you progress.
+- The code inside CODE lines must eventually form the complete, valid JSON object ({"code": "...", "description": "..."}).
+- Do NOT use any other prefixes. End with a final CODE line containing the closing brace.
+- The STATUS lines should be natural, accurate, and reflect exactly what you are coding at that moment (e.g., "Now writing the hero section HTML", "Adding responsive CSS for the navbar", "Implementing the score‑tracking JavaScript", etc.).
+- Status updates should appear roughly every 5‑10 seconds of generated content.
+- Keep STATUS messages one sentence, plain text.`;
+        temperature = 0.2;
+        maxTokens = 6000;
+      } else {
+        systemContent = `${baseEditPrompt}
+
+**Streaming output instructions (IMPORTANT):**
+Same as above: output STATUS: ... lines to describe your current action (e.g., "Selecting the main container", "Creating a new button element", "Adding an event listener for the form"), and CODE: ... lines for the JavaScript code of the final JSON. The final JSON must be formed by all CODE lines together.`;
+        temperature = 0.3;
+        maxTokens = 1500;
+      }
+
       // Set SSE headers
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
-        "X-Accel-Buffering": "no", // helpful for nginx/proxy
+        "X-Accel-Buffering": "no",
       });
 
-      const sendSSE = (data) => {
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
-      };
+      const sendSSE = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
-      let fullText = "";
-      let lastStatus = "Starting…";
-      sendSSE({ type: "status", message: lastStatus });
-
-      // Use OpenAI streaming
+      // Start streaming from OpenAI
       const completion = await client.chat.completions.create({
         model: "deepseek/deepseek-v4-flash",
         messages: [{ role: "system", content: systemContent }, ...messages],
         temperature,
         max_tokens: maxTokens,
-        response_format: { type: "json_object" },
-        stream: true, // enable streaming
+        stream: true, // stream enabled
       });
 
-      // Periodic heartbeat (every 8 sec) to keep UI fresh
-      const heartbeat = setInterval(() => {
-        // Only send if connection is still open
-        if (!res.writableEnded) {
-          sendSSE({ type: "status", message: lastStatus });
-        } else {
-          clearInterval(heartbeat);
-        }
-      }, 8000);
+      let fullText = "";
+      let buffer = ""; // to reconstruct lines from chunks
+      let statusSent = [];
 
-      // Process stream chunks
       for await (const part of completion) {
         const content = part.choices[0]?.delta?.content || "";
-        if (content) {
-          fullText += content;
-          const newStatus = inferStatus(fullText);
-          if (newStatus !== lastStatus) {
-            lastStatus = newStatus;
-            sendSSE({ type: "status", message: lastStatus });
+        if (!content) continue;
+
+        fullText += content;
+        // We need to process full lines to detect STATUS/CODE prefixes
+        buffer += content;
+        while (buffer.includes("\n")) {
+          const newlineIdx = buffer.indexOf("\n");
+          const line = buffer.slice(0, newlineIdx).trim();
+          buffer = buffer.slice(newlineIdx + 1);
+
+          if (line.startsWith("STATUS: ")) {
+            const message = line.substring(8).trim();
+            if (message && !statusSent.includes(message)) {
+              statusSent.push(message);
+              sendSSE({ type: "status", message });
+            }
           }
+          // CODE lines will be accumulated later; we don't send them separately
+        }
+      }
+      // Process any remaining buffer (might be a partial line without newline)
+      if (buffer.startsWith("STATUS: ")) {
+        const message = buffer.substring(8).trim();
+        if (message && !statusSent.includes(message)) {
+          sendSSE({ type: "status", message });
         }
       }
 
-      clearInterval(heartbeat);
+      // Now extract the JSON from the full text.
+      // Since the model output lines with STATUS/CODE prefixes, we need to strip those and keep only the CODE parts.
+      // Actually, a simpler method: we can just take the fullText and parse it for the JSON object, ignoring the STATUS lines.
+      // Because the model will intersperse lines like "STATUS: ..." and "CODE: ...". The final JSON can be reconstructed by concatenating all CODE parts.
+      // Let's do that:
+      const lines = fullText.split("\n");
+      let codeParts = [];
+      for (const line of lines) {
+        if (line.startsWith("CODE: ")) {
+          codeParts.push(line.substring(6)); // remove "CODE: " prefix
+        }
+      }
+      const codeString = codeParts.join("");
+      const parsed = extractJSON(codeString);
 
-      // Parse the final JSON and send result
-      const parsed = extractJSON(fullText);
       if (parsed && parsed.code && parsed.description) {
         sendSSE({
           type: "result",
@@ -219,19 +203,38 @@ Return **only** the JSON object.`;
           description: parsed.description,
         });
       } else {
-        // In case parsing fails, still send the raw text as description
-        sendSSE({
-          type: "result",
-          code: null,
-          description: fullText || "Could not generate a valid response.",
-        });
+        // Fallback: try to parse the entire text as JSON (maybe model ignored instructions)
+        const fallback = extractJSON(fullText);
+        if (fallback && fallback.code && fallback.description) {
+          sendSSE({
+            type: "result",
+            code: fallback.code,
+            description: fallback.description,
+          });
+        } else {
+          sendSSE({
+            type: "result",
+            code: null,
+            description: "Could not generate valid code.",
+          });
+        }
       }
 
       res.end();
       return;
     }
 
-    // ---------- NON‑STREAMING BRANCH (original behavior) ----------
+    // ---------- NON‑STREAMING MODE (unchanged) ----------
+    if (mode === "generate") {
+      systemContent = `${baseGeneratePrompt}\n\nReturn only the JSON object. No markdown.`;
+      temperature = 0.2;
+      maxTokens = 6000;
+    } else {
+      systemContent = `${baseEditPrompt}\n\nReturn only the JSON object. No markdown.`;
+      temperature = 0.3;
+      maxTokens = 1500;
+    }
+
     const completion = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
       messages: [{ role: "system", content: systemContent }, ...messages],
@@ -267,7 +270,7 @@ Return **only** the JSON object.`;
 });
 
 // ============================
-//  POST /ask – Page assistant (unchanged, but safe)
+//  POST /ask – Page assistant
 // ============================
 app.post("/ask", async (req, res) => {
   try {
@@ -278,7 +281,7 @@ app.post("/ask", async (req, res) => {
 
     const systemMessage = {
       role: "system",
-      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Keep answers clear and concise.`,
+      content: `You are a helpful assistant. The user is viewing a web page:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question clearly.`,
     };
 
     const completion = await client.chat.completions.create({
@@ -296,7 +299,9 @@ app.post("/ask", async (req, res) => {
 });
 
 // --------------- Health check ---------------
-app.get("/", (req, res) => res.send("AI Backend (streaming) is running."));
+app.get("/", (req, res) =>
+  res.send("AI Backend (live status streaming) is running."),
+);
 
 // --------------- Start server ---------------
 const PORT = process.env.PORT || 3000;
