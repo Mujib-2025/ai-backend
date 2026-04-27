@@ -1,4 +1,4 @@
-// server.js – AI backend for Render (full CORS, streaming + regular)
+// server.js – AI backend for Render (full CORS, streaming + non‑streaming)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -56,20 +56,16 @@ function extractJSON(text) {
   }
 }
 
-// ============================
-//  POST /chat – Build / Edit (non-streaming fallback)
-// ============================
-app.post("/chat", async (req, res) => {
-  try {
-    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: "messages array required" });
-    }
+// --------------- Helper: build system prompt ---------------
+function buildSystemPrompt(mode, sandboxHTML, complexity, device) {
+  const isGenerate = mode === "generate";
+  const deviceTarget =
+    device === "mobile"
+      ? "mobile (small touch screens, max-width 480px in mind)"
+      : "desktop (wide screens, mouse interaction)";
 
-    let systemContent, temperature, maxTokens;
-
-    if (mode === "generate") {
-      systemContent = `You are a world‑class web designer and front‑end developer.
+  if (isGenerate) {
+    return `You are a world‑class web designer and front‑end developer.
 You create **complete, production‑ready, multi‑section websites or fully functional games** (HTML, CSS, JS) based on the user's request.
 
 Your output must be a single JSON object with the following structure:
@@ -78,24 +74,24 @@ Your output must be a single JSON object with the following structure:
   "description": "a short, friendly summary of what you built"
 }
 
+**DEVICE TARGET:** ${deviceTarget}
+- Optimise the entire page for that device: font sizes, touch targets, layouts, interactions.
+- For mobile: use mobile‑first responsive CSS, large touch areas, no hover‑dependent elements.
+- For desktop: use larger layouts, hover effects, fine‑grain pointer interactions.
+
 **ABSOLUTE REQUIREMENTS** (the page must be ready to publish immediately):
 - **Real content:** No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
 - **Complete website structure:** Include a proper <header> (with logo and navigation), a <main> area with several meaningful sections (hero, features, about, services/projects, contact, footer), and a well‑styled <footer>.
 - **Working navigation:** Internal links (href="#section") must scroll smoothly; external links (if any) must use valid placeholders like "#".
-- **Responsive design:** Use modern CSS (grid/flexbox, media queries) so the layout works perfectly on mobile, tablet, and desktop.
+- **Responsive design:** Use modern CSS (grid/flexbox, media queries) so the layout works perfectly on mobile, tablet, and desktop, but with primary focus on the device target.
 - **Interactive elements:** Buttons, forms, sliders, or cards must have functional event handlers. For a game, include game logic, scoring, win/loss conditions, restart, and appropriate UI.
 - **SEO basics:** Add a descriptive <title>, <meta name="description">, and semantic HTML5 tags.
 - **Images:** Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\` or \`https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT\`. No local paths.
-- **Performance:** Keep total size under 6000 tokens (the code may be longer than usual – that's okay).
-
-Example for a game: a fully playable Tic‑Tac‑Toe with player/computer turns, score tracking, and a reset button.
-Example for a portfolio site: hero image, about, skills, projects, contact form, and a sticky navbar.
+- **Performance:** Keep total size under ${complexity === "simple" ? 1500 : 6000} tokens.
 
 Return **only** the JSON object. Do NOT wrap it in markdown.`;
-      temperature = 0.2;
-      maxTokens = 6000;
-    } else {
-      systemContent = `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
+  } else {
+    return `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
 The current page content is:
 
 \`\`\`html
@@ -113,6 +109,8 @@ Your task: **write a JavaScript snippet that modifies or extends the sandbox** t
 - Do NOT use alert, prompt, or document.write.
 - For images, use absolute URLs like \`https://picsum.photos/400/300\`. Never local paths.
 
+**Device target:** ${deviceTarget} — ensure your JavaScript additions respect the design constraints of that device (e.g., larger touch targets for mobile, hover fallbacks).
+
 **Your response must be a single JSON object:**
 {"code": "the JavaScript code", "description": "one sentence summary of what was done"}
 
@@ -120,9 +118,41 @@ Your task: **write a JavaScript snippet that modifies or extends the sandbox** t
 - The "description" is for the log; make it short and human‑friendly.
 
 Return **only** the JSON object.`;
-      temperature = 0.3;
-      maxTokens = 1500;
+  }
+}
+
+// ============================
+//  POST /chat – Build / Edit (non‑streaming fallback)
+// ============================
+app.post("/chat", async (req, res) => {
+  try {
+    const {
+      messages,
+      mode = "edit",
+      sandboxHTML = "",
+      complexity = "simple",
+      device = "desktop",
+    } = req.body;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages array required" });
     }
+
+    let maxTokens =
+      complexity === "simple"
+        ? mode === "generate"
+          ? 1500
+          : 500
+        : mode === "generate"
+          ? 6000
+          : 2000;
+
+    const systemContent = buildSystemPrompt(
+      mode,
+      sandboxHTML,
+      complexity,
+      device,
+    );
+    const temperature = mode === "generate" ? 0.2 : 0.3;
 
     const completion = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
@@ -160,68 +190,35 @@ Return **only** the JSON object.`;
 // ============================
 app.post("/chat/stream", async (req, res) => {
   try {
-    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
+    const {
+      messages,
+      mode = "edit",
+      sandboxHTML = "",
+      complexity = "simple",
+      device = "desktop",
+    } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array required" });
     }
 
-    // Same prompts as non-streaming, but without response_format (streaming doesn't support it)
-    let systemContent, temperature, maxTokens;
+    let maxTokens =
+      complexity === "simple"
+        ? mode === "generate"
+          ? 1500
+          : 500
+        : mode === "generate"
+          ? 6000
+          : 2000;
 
-    if (mode === "generate") {
-      systemContent = `You are a world‑class web designer and front‑end developer.
-You create **complete, production‑ready, multi‑section websites or fully functional games** (HTML, CSS, JS) based on the user's request.
+    const systemContent = buildSystemPrompt(
+      mode,
+      sandboxHTML,
+      complexity,
+      device,
+    );
+    const temperature = mode === "generate" ? 0.2 : 0.3;
 
-Your output must be a single JSON object with the following structure:
-{
-  "code": "<full HTML page from <!DOCTYPE html> to </html>>",
-  "description": "a short, friendly summary of what you built"
-}
-
-**ABSOLUTE REQUIREMENTS** (the page must be ready to publish immediately):
-- **Real content:** No "Lorem Ipsum", no placeholders. Write genuine, unique text for every section.
-- **Complete website structure:** Include a proper <header> (with logo and navigation), a <main> area with several meaningful sections (hero, features, about, services/projects, contact, footer), and a well‑styled <footer>.
-- **Working navigation:** Internal links (href="#section") must scroll smoothly; external links (if any) must use valid placeholders like "#".
-- **Responsive design:** Use modern CSS (grid/flexbox, media queries) so the layout works perfectly on mobile, tablet, and desktop.
-- **Interactive elements:** Buttons, forms, sliders, or cards must have functional event handlers. For a game, include game logic, scoring, win/loss conditions, restart, and appropriate UI.
-- **SEO basics:** Add a descriptive <title>, <meta name="description">, and semantic HTML5 tags.
-- **Images:** Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\` or \`https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT\`. No local paths.
-- **Performance:** Keep total size under 6000 tokens (the code may be longer than usual – that's okay).
-
-Return **only** the JSON object. Do NOT wrap it in markdown.`;
-      temperature = 0.2;
-      maxTokens = 6000;
-    } else {
-      systemContent = `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
-The current page content is:
-
-\`\`\`html
-${sandboxHTML || "(empty)"}
-\`\`\`
-
-Your task: **write a JavaScript snippet that modifies or extends the sandbox** to fulfill the user's request.
-- The JavaScript will run inside the sandbox (which contains an iframe with id "sandbox-iframe").
-  To access the page inside, always use:
-    const iframe = document.getElementById('sandbox-iframe');
-    const doc = iframe.contentDocument;
-  and then manipulate the iframe's document.
-- Preserve all existing elements unless the user explicitly asks to remove/replace something.
-- Use only stable DOM methods (querySelector, createElement, appendChild, classList, etc.).
-- Do NOT use alert, prompt, or document.write.
-- For images, use absolute URLs like \`https://picsum.photos/400/300\`. Never local paths.
-
-**Your response must be a single JSON object:**
-{"code": "the JavaScript code", "description": "one sentence summary of what was done"}
-
-- The "code" field must contain only executable JavaScript (no markdown, no HTML wrapping). Do NOT include \`\`\`javascript fences.
-- The "description" is for the log; make it short and human‑friendly.
-
-Return **only** the JSON object.`;
-      temperature = 0.3;
-      maxTokens = 1500;
-    }
-
-    // Set SSE headers
+    // SSE headers
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -232,26 +229,22 @@ Return **only** the JSON object.`;
       messages: [{ role: "system", content: systemContent }, ...messages],
       temperature,
       max_tokens: maxTokens,
-      stream: true, // <-- enable streaming
+      stream: true,
     });
 
     let fullContent = "";
 
-    // Send progress events while streaming
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || "";
       if (delta) {
         fullContent += delta;
-        // Send progress event with the new delta
         res.write(`data: ${JSON.stringify({ delta })}\n\n`);
       }
     }
 
-    // When the stream ends, parse the result
     const parsed = extractJSON(fullContent);
     let code = null;
     let description = "";
-
     if (
       parsed &&
       typeof parsed.code === "string" &&
@@ -263,12 +256,10 @@ Return **only** the JSON object.`;
       description = fullContent || "Invalid response format.";
     }
 
-    // Send final done event
     res.write(`data: ${JSON.stringify({ done: true, code, description })}\n\n`);
     res.end();
   } catch (err) {
     console.error("/chat/stream error:", err);
-    // If headers already sent, we can't change them. Try to send an error event.
     if (res.headersSent) {
       res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
       res.end();
@@ -284,9 +275,7 @@ Return **only** the JSON object.`;
 app.post("/ask", async (req, res) => {
   try {
     const { question, sandboxHTML } = req.body;
-    if (!question) {
-      return res.status(400).json({ reply: "Missing question." });
-    }
+    if (!question) return res.status(400).json({ reply: "Missing question." });
 
     const systemMessage = {
       role: "system",
@@ -308,7 +297,9 @@ app.post("/ask", async (req, res) => {
 });
 
 // --------------- Health check ---------------
-app.get("/", (req, res) => res.send("AI Backend v2 (streaming) is running."));
+app.get("/", (req, res) =>
+  res.send("AI Backend v3 (device‑aware) is running."),
+);
 
 // --------------- Start server ---------------
 const PORT = process.env.PORT || 3000;
