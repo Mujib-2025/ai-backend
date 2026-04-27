@@ -56,6 +56,27 @@ function extractJSON(text) {
   }
 }
 
+// --------------- Helper: extract HTML or JS code from raw text ---------------
+function extractCodeFromRawText(text, mode) {
+  // If mode is generate, look for a full HTML page
+  if (mode === "generate") {
+    const htmlMatch = text.match(/```html\s*([\s\S]*?)\s*```/);
+    if (htmlMatch) return htmlMatch[1].trim();
+
+    const doctypeMatch = text.match(/<!DOCTYPE html[\s\S]*/i);
+    if (doctypeMatch) return doctypeMatch[0].trim();
+  }
+
+  // For edit mode, look for JavaScript code block
+  const jsMatch = text.match(/```javascript\s*([\s\S]*?)\s*```/);
+  if (jsMatch) return jsMatch[1].trim();
+
+  const codeMatch = text.match(/```\s*([\s\S]*?)```/);
+  if (codeMatch) return codeMatch[1].trim();
+
+  return null;
+}
+
 // --------------- Helper: build system prompt ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device) {
   const isGenerate = mode === "generate";
@@ -68,11 +89,13 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device) {
     return `You are a world‑class web designer and front‑end developer.
 You create **complete, production‑ready, multi‑section websites or fully functional games** (HTML, CSS, JS) based on the user's request.
 
-Your output must be a single JSON object with the following structure:
+Your response must be a single JSON object with this exact structure and nothing else:
 {
   "code": "<full HTML page from <!DOCTYPE html> to </html>>",
   "description": "a short, friendly summary of what you built"
 }
+
+**CRITICAL:** Your entire message must start with { and end with }. No introductory text, no markdown fences, no commentary. Just the raw JSON.
 
 **DEVICE TARGET:** ${deviceTarget}
 - Optimise the entire page for that device: font sizes, touch targets, layouts, interactions.
@@ -89,7 +112,7 @@ Your output must be a single JSON object with the following structure:
 - **Images:** Only absolute URLs from services like \`https://picsum.photos/WIDTH/HEIGHT\` or \`https://images.unsplash.com/photo-ID?w=WIDTH&h=HEIGHT\`. No local paths.
 - **Performance:** Keep total size under ${complexity === "simple" ? 1500 : 6000} tokens.
 
-Return **only** the JSON object. Do NOT wrap it in markdown.`;
+Remember: return ONLY the JSON object, no markdown wrapping.`;
   } else {
     return `You are an expert front‑end developer. The user is working on a web page inside a sandbox.
 The current page content is:
@@ -111,13 +134,11 @@ Your task: **write a JavaScript snippet that modifies or extends the sandbox** t
 
 **Device target:** ${deviceTarget} — ensure your JavaScript additions respect the design constraints of that device (e.g., larger touch targets for mobile, hover fallbacks).
 
-**Your response must be a single JSON object:**
+**Your response must be a single JSON object with this exact structure and nothing else:**
 {"code": "the JavaScript code", "description": "one sentence summary of what was done"}
 
-- The "code" field must contain only executable JavaScript (no markdown, no HTML wrapping). Do NOT include \`\`\`javascript fences.
-- The "description" is for the log; make it short and human‑friendly.
-
-Return **only** the JSON object.`;
+**CRITICAL:** Your entire message must start with { and end with }. No markdown fences, no introductory text, just the raw JSON.
+The "code" field must contain only executable JavaScript (no \`\`\`javascript fences, no extra wrapping).`;
   }
 }
 
@@ -172,6 +193,11 @@ app.post("/chat", async (req, res) => {
     ) {
       return res.json({ code: parsed.code, description: parsed.description });
     } else {
+      // Try to salvage from raw text
+      const code = extractCodeFromRawText(text, mode);
+      if (code) {
+        return res.json({ code, description: "Auto‑extracted from response." });
+      }
       return res.json({
         code: null,
         description: text || "Invalid response format.",
@@ -242,9 +268,11 @@ app.post("/chat/stream", async (req, res) => {
       }
     }
 
-    const parsed = extractJSON(fullContent);
+    // First, try standard JSON extraction
+    let parsed = extractJSON(fullContent);
     let code = null;
     let description = "";
+
     if (
       parsed &&
       typeof parsed.code === "string" &&
@@ -253,7 +281,13 @@ app.post("/chat/stream", async (req, res) => {
       code = parsed.code;
       description = parsed.description;
     } else {
-      description = fullContent || "Invalid response format.";
+      // Attempt to extract code from raw text (may contain markdown fences)
+      code = extractCodeFromRawText(fullContent, mode);
+      if (code) {
+        description = "Extracted from raw AI response.";
+      } else {
+        description = fullContent || "Invalid response format.";
+      }
     }
 
     res.write(`data: ${JSON.stringify({ done: true, code, description })}\n\n`);
@@ -298,7 +332,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v3 (device‑aware) is running."),
+  res.send("AI Backend v4 (auto‑extract code) is running."),
 );
 
 // --------------- Start server ---------------
