@@ -75,10 +75,11 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (ULTRA mode added) ---------------
+// --------------- Helper: build system prompt (UPDATED with mobile game sizing) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
+  const isSimple = complexity === "simple";
 
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -98,14 +99,9 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     lowerMsg.includes("3d game") ||
     lowerMsg.includes("three js");
 
-  // Automatically switch to ultra mode for any game or 3D request
-  if (isGame || is3D) {
-    complexity = "ultra";
-  }
-
   let layoutInstructions = "";
   if (isMobile) {
-    layoutInstructions = `
+    let mobileBase = `
 - **CRITICAL: STRICT VERTICAL MOBILE LAYOUT**
   * The entire page must be a **single vertical column** that fits a phone screen without any horizontal scrolling.
   * Use \`max-width: 100vw; overflow-x: hidden; box-sizing: border-box;\` on body and all containers.
@@ -115,6 +111,18 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   * **Absolutely no horizontal scrollbars.**
   * **NO KEYBOARD:** Do NOT use any text input fields, textareas, contenteditable, or <input> elements. All interaction must be via <button>, canvas, or touch events. Do not set autofocus or call .focus() anywhere.
 `;
+    if (isGame) {
+      mobileBase += `
+- **MOBILE GAME SIZING (STRICT):**
+  * Design for a **9:16** aspect ratio (portrait phone).
+  * Base resolution: 1080×1920px. Scale everything to fit.
+  * Gracefully scale down to 720×1280px using relative units, flexible canvas, or viewport‑based sizing.
+  * Keep all critical UI (score, buttons, game canvas) inside a **safe area** with padding of 5–10% from edges to avoid notches, nav bars, and screen curves.
+  * Use \`canvas { width: 100%; height: auto; display: block; }\` for canvas‑based games; control aspect ratio inside the JavaScript.
+  * If using DOM elements, position them with \% or \ vw\ units and ensure they remain within the safe zone at all breakpoints.
+`;
+    }
+    layoutInstructions = mobileBase;
   } else {
     layoutInstructions = `- **Desktop layout** - responsive, secondary mobile support.`;
   }
@@ -136,20 +144,10 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     gameInstructions = `- If a standard website, include header, main, footer, etc.`;
   }
 
-  let complexityInstructions = "";
-  if (complexity === "simple") {
-    complexityInstructions = `- **Simple Mode**: Keep code LINEAR and SHORT, BUT the game/website MUST BE FULLY FUNCTIONAL. Implement all game logic: start, play, win/lose detection, scoring, and a working restart button. No placeholder alerts. Every button must do something. Prioritize working mechanics over styling. If you are low on tokens, make the game logic compact but complete.`;
-  } else if (complexity === "advanced") {
-    complexityInstructions = `- **Advanced Mode**: Richer styling and animations, but still fully functional.`;
-  } else if (complexity === "ultra") {
-    complexityInstructions = `- **ULTRA ADVANCED MODE (auto‑activated for games & 3D)**: 
-   * Create a **fully polished, production‑ready** game or 3D application.
-   * Include **complete game mechanics**, multiple game states (start screen, gameplay, pause, game over, victory), score tracking, smooth CSS/JS animations, and simple sound effects (use Web Audio API oscillators for beeps, or free CDN audio if needed).
-   * For 3D: use lighting, shadows (if performance permits), responsive canvas, mobile touch controls, and simple particle effects or textured objects (from picsum).
-   * The code must be self‑contained and ready for immediate deployment.
-   * Use clean, well‑organised code with brief comments, but keep it within the token budget – prioritise **working game logic over excessive styling**.
-   * Guarantee the game is immediately playable and fully functional on both mobile and desktop.`;
-  }
+  let complexityInstructions =
+    complexity === "simple"
+      ? `- **Simple Mode**: Keep code LINEAR and SHORT, BUT the game/website MUST BE FULLY FUNCTIONAL. Implement all game logic: start, play, win/lose detection, scoring, and a working restart button. No placeholder alerts. Every button must do something. Prioritize working mechanics over styling. If you are low on tokens, make the game logic compact but complete.`
+      : `- **Advanced Mode**: Richer styling and animations, but still fully functional.`;
 
   const noPromptAlert =
     "- **NEVER** use `prompt()`, `alert()`, `document.write()`, `confirm()`, or any kind of popup. For feedback, update the DOM. In games, absolutely no <input>, <textarea>, or contenteditable. Use only <button> for actions.";
@@ -173,19 +171,19 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
 
 **STRICT RULES:**
 1. Must include: scene, camera, renderer, and animate loop.
-2. Must attach renderer to document.body (or a container) with appropriate styling.
-3. Must always add at least one visible object in the scene (ground, cube, sphere, etc.).
-4. Camera must be positioned to see objects immediately.
+2. Must attach renderer to document.body (or a container) with appropriate styling to fill the screen.
+3. Must always add at least one visible object in the scene (a ground, cube, sphere, etc.).
+4. Camera must be positioned to see objects immediately (do not place behind or inside objects).
 5. Must include window resize handling (addEventListener('resize', ...)).
-6. Only include lights if using non-basic materials.
-7. Never rely on external setup beyond Three.js CDN.
-8. Avoid errors at all costs.
-9. Prefer simple geometry over complex systems.
-10. Use mobile-first controls: touch events + mouse/keyboard fallback.
-11. If any feature risks breaking rendering, remove it.
-12. Must include visible player object and basic interaction.
-13. No text input, no keyboard required for gameplay.
-14. Output ONLY complete HTML code starting with <!DOCTYPE html>.
+6. Only include lights if using non-basic materials (MeshStandardMaterial, MeshPhongMaterial, etc.). For basic materials, omit lights.
+7. Must never rely on external setup, frameworks (other than Three.js via CDN), or build tools.
+8. Must avoid errors at all costs (no undefined variables, no missing imports, include Three.js from CDN before usage).
+9. Prefer simple geometry (BoxGeometry, SphereGeometry) over complex systems unless specifically requested.
+10. **Must use mobile-first controls:** use touch events (touchstart, touchmove, touchend) for mobile, and also provide mouse/keyboard fallback for desktop. For example, use pointer events or combine touch + mouse.
+11. If any feature risks breaking rendering, remove it to keep the output functional.
+12. Must include a visible player object or point of interaction, and basic interaction (moving, collecting, shooting, etc.) that works on mobile.
+13. **No text input fields, no keyboard required for gameplay.** Use on-screen buttons or touch gestures.
+14. Output ONLY the complete HTML code. No explanations, no markdown, no code fences. The code must start with <!DOCTYPE html>.
 `
     : "";
 
@@ -193,9 +191,16 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
 **🖼️ IMAGE RULES (CRITICAL):**
 - ALWAYS use absolute, working image URLs starting with "https://".
 - NEVER use local file names like "image.png", "/img/hero.jpg", or "./photo.jpg".
-- For context‑appropriate images, use: \`https://source.unsplash.com/featured/?{topic}\`
-- Or use \`https://picsum.photos/WIDTH/HEIGHT\` for random high‑quality photos.
-- Or \`https://via.placeholder.com/WIDTHxHEIGHT?text=TEXT\` for simple placeholders.
+- For context‑appropriate images (the best choice), use the Unsplash Source API:
+  \`https://source.unsplash.com/featured/?{topic}\`
+  where {topic} is a keyword that matches the website's theme. For example:
+    * a restaurant site: \`https://source.unsplash.com/featured/?food\`
+    * a gym site: \`https://source.unsplash.com/featured/?fitness\`
+    * a tech site: \`https://source.unsplash.com/featured/?technology\`
+    * a travel site: \`https://source.unsplash.com/featured/?travel\`
+- You can also use \`https://picsum.photos/WIDTH/HEIGHT\` for random high‑quality photos.
+- Use \`https://via.placeholder.com/WIDTHxHEIGHT?text=TEXT\` for simple colored placeholders.
+- All images must be directly viewable in a browser.
 `;
 
   if (isGenerate) {
@@ -232,7 +237,7 @@ ${imageRules}
 - Include viewport meta tag for mobile responsiveness.
 - Use <button> for all interactive elements; not <input type="button"> or <a>.
 
-Your entire message must start with { and end with }. No markdown, no commentary.`;
+Your entire message must start with \{ and end with \}. No markdown, no commentary.`;
   } else {
     return `You are an expert front‑end developer.
 The current sandbox page:
@@ -271,7 +276,7 @@ Start with { and end with }. No markdown wrapping.`;
 // ============================
 app.post("/chat", async (req, res) => {
   try {
-    let {
+    const {
       messages,
       mode = "edit",
       sandboxHTML = "",
@@ -284,28 +289,9 @@ app.post("/chat", async (req, res) => {
 
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
-    const lowerMsg = userMessage.toLowerCase();
-    const isGame =
-      lowerMsg.includes("game") ||
-      lowerMsg.includes("play") ||
-      lowerMsg.includes("tic") ||
-      lowerMsg.includes("snake") ||
-      lowerMsg.includes("puzzle");
-    const is3D =
-      lowerMsg.includes("3d") ||
-      lowerMsg.includes("three.js") ||
-      lowerMsg.includes("threejs") ||
-      lowerMsg.includes("webgl");
-
-    // Auto‑switch to ultra for games/3D
-    if (isGame || is3D) {
-      complexity = "ultra";
-    }
 
     let maxTokens;
-    if (complexity === "ultra") {
-      maxTokens = mode === "generate" ? 8000 : 2000; // max output limit
-    } else if (complexity === "simple") {
+    if (complexity === "simple") {
       maxTokens = mode === "generate" ? 8000 : 1500;
     } else {
       maxTokens = mode === "generate" ? 8000 : 2000;
@@ -360,7 +346,7 @@ app.post("/chat", async (req, res) => {
 // ============================
 app.post("/chat/stream", async (req, res) => {
   try {
-    let {
+    const {
       messages,
       mode = "edit",
       sandboxHTML = "",
@@ -373,28 +359,9 @@ app.post("/chat/stream", async (req, res) => {
 
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
-    const lowerMsg = userMessage.toLowerCase();
-    const isGame =
-      lowerMsg.includes("game") ||
-      lowerMsg.includes("play") ||
-      lowerMsg.includes("tic") ||
-      lowerMsg.includes("snake") ||
-      lowerMsg.includes("puzzle");
-    const is3D =
-      lowerMsg.includes("3d") ||
-      lowerMsg.includes("three.js") ||
-      lowerMsg.includes("threejs") ||
-      lowerMsg.includes("webgl");
-
-    // Auto‑switch to ultra for games/3D
-    if (isGame || is3D) {
-      complexity = "ultra";
-    }
 
     let maxTokens;
-    if (complexity === "ultra") {
-      maxTokens = mode === "generate" ? 8000 : 2000;
-    } else if (complexity === "simple") {
+    if (complexity === "simple") {
       maxTokens = mode === "generate" ? 8000 : 1500;
     } else {
       maxTokens = mode === "generate" ? 8000 : 2000;
@@ -496,7 +463,7 @@ app.post("/ask", async (req, res) => {
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
   res.send(
-    "AI Backend v12 (Ultra mode auto‑activated for games & 3D) is running.",
+    "AI Backend v12 (mobile game sizing, 3D rules, keyboard‑free) is running.",
   ),
 );
 
