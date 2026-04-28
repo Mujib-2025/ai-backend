@@ -75,7 +75,7 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (FORCED FUNCTIONAL) ---------------
+// --------------- Helper: build system prompt (ALL CHANGES BELOW) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
@@ -96,16 +96,51 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     lowerMsg.includes("webgl") ||
     lowerMsg.includes("3d game");
 
-  // ---------- ABSOLUTE RULES (short, clear, mandatory) ----------
+  // ---------- NEW MANDATORY RULES (merged with old ones) ----------
   const mandatoryRules = `
 **MANDATORY RULES – if you break any of these your output is invalid:**
-1. **NO inline onclick attributes.** Do NOT use \`onclick="..."\` in HTML tags. Attach all click handlers using \`addEventListener\` inside a single \`<script>\` block at the end of \`<body>\`. Make sure every function that handles an event is defined in that same script.
-2. **NO \`<input>\`, \`<textarea>\`, \`contenteditable\`** – these open the mobile keyboard. Use only \`<button>\` for actions.
-3. **NO \`prompt()\`, \`alert()\`, \`confirm()\`, \`document.write()\`** – never use them.
-4. **Do NOT call \`.focus()\`** or set \`autofocus\`.
-5. Every button must perform a visible action (change DOM, update score, move a piece, etc.). If a button exists, it **must** work.
-6. **For games:** implement the full game loop – start, play, score, win/lose, restart. No placeholder functions.
-7. **Before outputting, mentally test every interactive element.** If any function is missing or undefined, fix it.
+
+1. NO inline onclick attributes. Use addEventListener in a single <script> at end of <body>.
+2. NO <input>, <textarea>, contenteditable.
+3. NO alert(), prompt(), confirm(), document.write().
+4. Do NOT call .focus() or use autofocus.
+5. Every button MUST perform a visible action.
+6. ALL functions referenced MUST be defined.
+7. No placeholder code, no TODOs, no comments like "implement later".
+
+8. **FULL GAME REQUIREMENT:**
+If you generate a game, it MUST include:
+- Start state (game initializes correctly)
+- Game loop (update + render using requestAnimationFrame if needed)
+- Player interaction (touch/mouse)
+- Game logic (movement, rules, collisions, etc.)
+- Score system (visible and updating)
+- Win OR lose condition
+- Restart button that fully resets the game
+
+9. **The game must be immediately playable on load.**
+No setup steps, no missing logic.
+
+10. **Before outputting, mentally simulate gameplay.**
+If the game cannot be played from start to finish, fix it.
+
+11. **CORE MECHANIC REQUIREMENT:**
+The main mechanic of the app/game MUST be implemented and visible.
+- Identify the primary mechanic from the user request
+- That mechanic MUST exist as working code (not just UI)
+- The mechanic MUST update over time or through interaction
+- The mechanic MUST affect the game state (position, score, objects, etc.)
+If the main mechanic is missing, static, or not functional, the output is INVALID.
+
+12. **NO FAKE IMPLEMENTATIONS:**
+Do NOT simulate functionality with static visuals.
+Do NOT create UI that suggests behavior without implementing it in JavaScript.
+
+13. **STATE DRIVEN LOGIC:**
+All core behavior must be driven by real state variables that change during execution.
+If no state changes, the app is considered non-functional.
+
+14. **If using external libraries (like Three.js), you MUST use ES modules and <script type="module">.**
 `;
 
   // ---------- layout / game / 3d extensions ----------
@@ -114,7 +149,24 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     : `**Desktop layout:** responsive, supported on mobile too.`;
 
   const gameExtra = isGame
-    ? `**This is a game.** Single game screen, no header/footer. Score and restart button must be present and working.`
+    ? `**This is a COMPLETE GAME.**
+
+Requirements:
+- The game must be fully playable from start to finish
+- Include a visible score counter that updates live
+- Include clear win OR lose condition
+- Include a restart button that resets ALL state
+- No placeholder mechanics — everything must function
+
+Game loop:
+- Use requestAnimationFrame if animation is involved
+- Continuously update game state and render
+
+Interaction:
+- Must support touch (and mouse if desktop)
+- No keyboard controls
+
+If any part of the game is missing or non-functional, the output is INVALID.`
     : `**This is a website.** Include header, main content, footer.`;
 
   const complexityExtra = isSimple
@@ -127,13 +179,48 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
       : "";
 
   const threeD = is3D
-    ? `**3D game (Three.js):** Include scene, camera, renderer, animate loop. Append renderer to body. Use touch events for mobile. No keyboard. Simple geometry. Import Three.js from CDN: \`https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.min.js\`.`
+    ? `**3D game (Three.js):**
+Use ES modules only.
+
+You MUST:
+- Use <script type="module"> (not a normal script)
+- Import Three.js like this:
+  import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js';
+
+Include:
+- scene
+- camera
+- renderer
+- animation loop (requestAnimationFrame)
+
+Append renderer.domElement to document.body.
+
+Controls:
+- Mobile touch only (no keyboard)
+
+Use simple geometry only.`
     : "";
 
   const imageRules = `**Images:** Always use absolute HTTPS URLs (\`https://picsum.photos/400/300\` or \`https://source.unsplash.com/featured/?{topic}\`). Never local paths.`;
 
+  // ---------- generate / edit endings ----------
   const generateEnding = `**Output format:** ONLY a JSON object:
-{ "code": "<full HTML>", "description": "one‑sentence summary" }
+{ "code": "<full HTML>", "description": "one-sentence summary" }
+
+**CRITICAL VALIDATION BEFORE OUTPUT:**
+- The game (if any) must run without errors
+- All buttons must work
+- Score must update correctly
+- Game must reach a win or lose state
+- Restart must fully reset the game
+- The main mechanic is present and functional
+- If the main mechanic is missing or not working, FIX it before outputting
+
+The HTML MUST:
+- Be a complete document (<!DOCTYPE html>)
+- Place ALL JavaScript inside a single <script> at end of <body>
+- If Three.js is used, that script MUST be <script type="module">
+
 Your entire message must start with \`{\` and end with \`}\`. No markdown or explanation.`;
 
   const editEnding = `**How your code is executed:**
@@ -156,7 +243,7 @@ ${mandatoryRules}
 **Output format:** { "code": "your JavaScript code", "description": "brief summary" }`;
 
   if (isGenerate) {
-    return `You are a front‑end expert. Write a complete, self‑contained HTML page.
+    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page.
 ${mandatoryRules}
 ${layout}
 ${gameExtra}
@@ -166,7 +253,7 @@ ${threeD}
 ${imageRules}
 ${generateEnding}`;
   } else {
-    return `You are a front‑end expert. Write JavaScript that modifies the sandbox page.
+    return `You are an expert front‑end developer. Write JavaScript that modifies the sandbox page.
 ${editEnding}`;
   }
 }
@@ -190,6 +277,7 @@ app.post("/chat", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
+    // Higher token limits for complete logic
     const maxTokens =
       complexity === "simple"
         ? mode === "generate"
@@ -206,7 +294,7 @@ app.post("/chat", async (req, res) => {
       device,
       userMessage,
     );
-    const temperature = 0.0; // deterministic as possible
+    const temperature = 0.0;
 
     const completion = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
@@ -366,7 +454,9 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v14 (forced addEventListener – no broken onclick)."),
+  res.send(
+    "AI Backend v15 (core mechanic enforcement, module support) is running.",
+  ),
 );
 
 // --------------- Start server ---------------
