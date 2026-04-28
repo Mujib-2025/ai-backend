@@ -75,7 +75,7 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (UPDATED) ---------------
+// --------------- Helper: build system prompt (UPDATED with 3D rules) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
@@ -88,6 +88,17 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     lowerMsg.includes("tic") ||
     lowerMsg.includes("snake") ||
     lowerMsg.includes("puzzle");
+
+  // Detect 3D/Three.js requests
+  const is3D =
+    lowerMsg.includes("3d") ||
+    lowerMsg.includes("three.js") ||
+    lowerMsg.includes("threejs") ||
+    lowerMsg.includes("webgl") ||
+    lowerMsg.includes("gltf") ||
+    lowerMsg.includes("obj") ||
+    lowerMsg.includes("3d game") ||
+    lowerMsg.includes("three js");
 
   let layoutInstructions = "";
   if (isMobile) {
@@ -130,7 +141,7 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const noPromptAlert =
     "- **NEVER** use `prompt()`, `alert()`, `document.write()`, `confirm()`, or any kind of popup. For feedback, update the DOM. In games, absolutely no <input>, <textarea>, or contenteditable. Use only <button> for actions.";
 
-  // New explicit keyboard rule for games
+  // Strict keyboard rule for any game (2D or 3D)
   const keyboardRule = isGame
     ? `
 **📱 MOBILE KEYBOARD PREVENTION (GAMES ONLY):**
@@ -139,6 +150,31 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
 - Do not set autofocus attribute.
 - Do not call .focus() anywhere.
 - Use only <button> elements for all user interactions.
+`
+    : "";
+
+  // New 3D game rules block – added only when is3D is true
+  const threeJsRules = is3D
+    ? `
+### THREE.JS 3D GAME RULES (MUST FOLLOW):
+- You are generating a complete 3D game using Three.js in a single HTML file.
+- The output must ALWAYS render something visible on first load.
+
+**STRICT RULES:**
+1. Must include: scene, camera, renderer, and animate loop.
+2. Must attach renderer to document.body (or a container) with appropriate styling to fill the screen.
+3. Must always add at least one visible object in the scene (a ground, cube, sphere, etc.).
+4. Camera must be positioned to see objects immediately (do not place behind or inside objects).
+5. Must include window resize handling (addEventListener('resize', ...)).
+6. Only include lights if using non-basic materials (MeshStandardMaterial, MeshPhongMaterial, etc.). For basic materials, omit lights.
+7. Must never rely on external setup, frameworks (other than Three.js via CDN), or build tools.
+8. Must avoid errors at all costs (no undefined variables, no missing imports, include Three.js from CDN before usage).
+9. Prefer simple geometry (BoxGeometry, SphereGeometry) over complex systems unless specifically requested.
+10. **Must use mobile-first controls:** use touch events (touchstart, touchmove, touchend) for mobile, and also provide mouse/keyboard fallback for desktop. For example, use pointer events or combine touch + mouse.
+11. If any feature risks breaking rendering, remove it to keep the output functional.
+12. Must include a visible player object or point of interaction, and basic interaction (moving, collecting, shooting, etc.) that works on mobile.
+13. **No text input fields, no keyboard required for gameplay.** Use on-screen buttons or touch gestures.
+14. Output ONLY the complete HTML code. No explanations, no markdown, no code fences. The code must start with <!DOCTYPE html>.
 `
     : "";
 
@@ -170,6 +206,7 @@ ${gameInstructions}
 ${complexityInstructions}
 ${noPromptAlert}
 ${keyboardRule}
+${threeJsRules}
 ${imageRules}
 
 **CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
@@ -209,12 +246,14 @@ ${layoutInstructions}
 ${gameInstructions}
 ${complexityInstructions}
 ${keyboardRule}
+${threeJsRules}
 ${imageRules}
 
 **CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
 - Any added buttons/elements must respond immediately to clicks/touches.
 - Implement all requested interactions – no empty handlers.
 - If adding a game feature, ensure it is fully playable: add game logic, win conditions, restart if needed.
+- If modifying a 3D scene, follow the Three.js rules above.
 
 Response: ONLY a JSON object:
 {"code": "pure JS", "description": "one line summary"}
@@ -415,7 +454,7 @@ app.post("/ask", async (req, res) => {
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
   res.send(
-    "AI Backend v10 (strengthened prompts, full game logic, no keyboard) is running.",
+    "AI Backend v11 (3D game rules, no keyboard, fully functional games) is running.",
   ),
 );
 
