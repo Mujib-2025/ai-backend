@@ -75,7 +75,7 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (UPDATED with mobile game sizing) ---------------
+// --------------- Helper: build system prompt (RADICALLY SIMPLIFIED) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
@@ -94,180 +94,128 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     lowerMsg.includes("three.js") ||
     lowerMsg.includes("threejs") ||
     lowerMsg.includes("webgl") ||
-    lowerMsg.includes("gltf") ||
-    lowerMsg.includes("obj") ||
-    lowerMsg.includes("3d game") ||
-    lowerMsg.includes("three js");
+    lowerMsg.includes("3d game");
 
-  let layoutInstructions = "";
-  if (isMobile) {
-    let mobileBase = `
-- **CRITICAL: STRICT VERTICAL MOBILE LAYOUT**
-  * The entire page must be a **single vertical column** that fits a phone screen without any horizontal scrolling.
-  * Use \`max-width: 100vw; overflow-x: hidden; box-sizing: border-box;\` on body and all containers.
-  * No fixed widths; all widths in percentages or \`100%\`.
-  * Avoid CSS Grid with large fixed columns; use flexbox column.
-  * Touch targets at least 44×44px.
-  * **Absolutely no horizontal scrollbars.**
-  * **NO KEYBOARD:** Do NOT use any text input fields, textareas, contenteditable, or <input> elements. All interaction must be via <button>, canvas, or touch events. Do not set autofocus or call .focus() anywhere.
+  // --- Base rules for every request ---
+  const baseRules = `
+**Non‑negotiable rules:**
+- NEVER use \`prompt()\`, \`alert()\`, \`document.write()\`, or \`confirm()\`. Show everything in the DOM.
+- NEVER use \`<input>\`, \`<textarea>\`, \`contenteditable\` (that would open the keyboard on mobile). Use only \`<button>\`.
+- Do NOT call \`.focus()\` or set \`autofocus\`.
+- Use \`touch-action: manipulation;\` and \`user-select: none;\` on interactive elements.
 `;
-    if (isGame) {
-      mobileBase += `
-- **MOBILE GAME SIZING (STRICT):**
-  * Design for a **9:16** aspect ratio (portrait phone).
-  * Base resolution: 1080×1920px. Scale everything to fit.
-  * Gracefully scale down to 720×1280px using relative units, flexible canvas, or viewport‑based sizing.
-  * Keep all critical UI (score, buttons, game canvas) inside a **safe area** with padding of 5–10% from edges to avoid notches, nav bars, and screen curves.
-  * Use \`canvas { width: 100%; height: auto; display: block; }\` for canvas‑based games; control aspect ratio inside the JavaScript.
-  * If using DOM elements, position them with \% or \ vw\ units and ensure they remain within the safe zone at all breakpoints.
+
+  // --- Layout instructions ---
+  let layoutInstructions = isMobile
+    ? `**Mobile layout (strict):** Single vertical column, no horizontal scroll. Use percentages/flex. Touch targets at least 44×44px. **Do NOT add any text input (**no keyboard**).** All interaction through buttons or canvas.`
+    : `**Desktop layout:** Responsive with secondary mobile support.`;
+
+  // --- Game specific ---
+  let gameInstructions = isGame
+    ? `**YOU ARE BUILDING A GAME.** The page must be a single gameplay screen – no header/footer. Include a score display (DOM <div> or <span>), win/lose announcement, and a fully working restart button.`
+    : `**This is a website.** Include typical sections: header, main, footer.`;
+
+  // --- Complexity ---
+  let complexityInstructions = isSimple
+    ? `**Simple mode:** Keep code compact BUT **fully functional**. Implement ALL game logic – scoring, win/loss, restart. No placeholder comments like "// TODO".`
+    : `**Advanced mode:** Richer styling and animations, still fully functional.`;
+
+  // --- Mobile game sizing (only when mobile + game) ---
+  let mobileGameSizing = "";
+  if (isMobile && isGame) {
+    mobileGameSizing = `
+**Mobile game sizing:**
+- Design for a **9:16** portrait aspect ratio (base 1080×1920, scale to 720×1280).
+- Keep critical UI (score, buttons, canvas) inside a **5‑10% safe margin** from the screen edges.
+- Use \`vw\`, \`vh\`, or relative units so everything scales.
 `;
-    }
-    layoutInstructions = mobileBase;
-  } else {
-    layoutInstructions = `- **Desktop layout** - responsive, secondary mobile support.`;
   }
 
-  let gameInstructions = "";
-  if (isGame) {
-    gameInstructions = `
-- **YOU ARE BUILDING A GAME, NOT A MULTI‑SECTION WEBSITE.**
-  * The entire page must be a **single gameplay screen** – no header, navigation, or sections like “home”, “contact”, “about”.
-  * Only the game itself (canvas, board, buttons, score, restart) should exist.
-  * The layout must be clean and focused on the game mechanics.
-  * **ABSOLUTELY NO INPUT FIELDS:** Do NOT use any <input>, <textarea>, contenteditable, or any element that triggers a keyboard. Use only <button> elements for interaction.
-  * If a player name is required, hardcode "Player" or use a <button> to start; never ask for text input.
-  * Do not set autofocus or call .focus().
-  * Use CSS \`touch-action: manipulation;\` on all interactive elements to prevent zoom.
-  * Use \`user-select: none;\` to avoid text selection.
+  // --- 3D/Three.js rules ---
+  let threeJsRules = "";
+  if (is3D) {
+    threeJsRules = `
+**Three.js 3D game – MUST FOLLOW:**
+1. Include scene, camera, renderer, animate loop.
+2. Append renderer to body (or a container) – fill the screen.
+3. At least one visible object (e.g., a ground cube).
+4. Camera placed to see the objects immediately.
+5. Window resize handler.
+6. Lights only if using non‑basic materials.
+7. Use Three.js from CDN (no build tools).
+8. Avoid undefined variables; prefer simple geometries.
+9. **Mobile‑first controls:** use touch events (touchstart/move/end) + mouse fallback.
+10. **No text input. No keyboard.** Use on‑screen buttons or touch gestures.
+11. If something might break rendering, remove it.
+12. Output **only** the complete HTML code, starting with \`<!DOCTYPE html>\`.
 `;
-  } else {
-    gameInstructions = `- If a standard website, include header, main, footer, etc.`;
   }
 
-  let complexityInstructions =
-    complexity === "simple"
-      ? `- **Simple Mode**: Keep code LINEAR and SHORT, BUT the game/website MUST BE FULLY FUNCTIONAL. Implement all game logic: start, play, win/lose detection, scoring, and a working restart button. No placeholder alerts. Every button must do something. Prioritize working mechanics over styling. If you are low on tokens, make the game logic compact but complete.`
-      : `- **Advanced Mode**: Richer styling and animations, but still fully functional.`;
+  // --- Image rules ---
+  const imageRules = `**Images:** Use absolute HTTPS URLs (e.g., https://picsum.photos/400/300 or https://source.unsplash.com/featured/?{topic}). Never local paths.`;
 
-  const noPromptAlert =
-    "- **NEVER** use `prompt()`, `alert()`, `document.write()`, `confirm()`, or any kind of popup. For feedback, update the DOM. In games, absolutely no <input>, <textarea>, or contenteditable. Use only <button> for actions.";
-
-  const keyboardRule = isGame
-    ? `
-**📱 MOBILE KEYBOARD PREVENTION (GAMES ONLY):**
-- DO NOT include any element that can receive text input: no <input>, no <textarea>, no contenteditable, no [type="text"], no [type="email"], nothing.
-- Do not use prompt(), alert(), confirm().
-- Do not set autofocus attribute.
-- Do not call .focus() anywhere.
-- Use only <button> elements for all user interactions.
-`
-    : "";
-
-  const threeJsRules = is3D
-    ? `
-### THREE.JS 3D GAME RULES (MUST FOLLOW):
-- You are generating a complete 3D game using Three.js in a single HTML file.
-- The output must ALWAYS render something visible on first load.
-
-**STRICT RULES:**
-1. Must include: scene, camera, renderer, and animate loop.
-2. Must attach renderer to document.body (or a container) with appropriate styling to fill the screen.
-3. Must always add at least one visible object in the scene (a ground, cube, sphere, etc.).
-4. Camera must be positioned to see objects immediately (do not place behind or inside objects).
-5. Must include window resize handling (addEventListener('resize', ...)).
-6. Only include lights if using non-basic materials (MeshStandardMaterial, MeshPhongMaterial, etc.). For basic materials, omit lights.
-7. Must never rely on external setup, frameworks (other than Three.js via CDN), or build tools.
-8. Must avoid errors at all costs (no undefined variables, no missing imports, include Three.js from CDN before usage).
-9. Prefer simple geometry (BoxGeometry, SphereGeometry) over complex systems unless specifically requested.
-10. **Must use mobile-first controls:** use touch events (touchstart, touchmove, touchend) for mobile, and also provide mouse/keyboard fallback for desktop. For example, use pointer events or combine touch + mouse.
-11. If any feature risks breaking rendering, remove it to keep the output functional.
-12. Must include a visible player object or point of interaction, and basic interaction (moving, collecting, shooting, etc.) that works on mobile.
-13. **No text input fields, no keyboard required for gameplay.** Use on-screen buttons or touch gestures.
-14. Output ONLY the complete HTML code. No explanations, no markdown, no code fences. The code must start with <!DOCTYPE html>.
-`
-    : "";
-
-  const imageRules = `
-**🖼️ IMAGE RULES (CRITICAL):**
-- ALWAYS use absolute, working image URLs starting with "https://".
-- NEVER use local file names like "image.png", "/img/hero.jpg", or "./photo.jpg".
-- For context‑appropriate images (the best choice), use the Unsplash Source API:
-  \`https://source.unsplash.com/featured/?{topic}\`
-  where {topic} is a keyword that matches the website's theme. For example:
-    * a restaurant site: \`https://source.unsplash.com/featured/?food\`
-    * a gym site: \`https://source.unsplash.com/featured/?fitness\`
-    * a tech site: \`https://source.unsplash.com/featured/?technology\`
-    * a travel site: \`https://source.unsplash.com/featured/?travel\`
-- You can also use \`https://picsum.photos/WIDTH/HEIGHT\` for random high‑quality photos.
-- Use \`https://via.placeholder.com/WIDTHxHEIGHT?text=TEXT\` for simple colored placeholders.
-- All images must be directly viewable in a browser.
+  // --- Final interaction rules ---
+  const interactionRules = `
+**CRITICAL – EVERY BUTTON MUST WORK:**
+- Every clickable element must have a real JavaScript handler (addEventListener or inline onclick) that does something visible.
+- For games: implement **full game loop** – initial state, player interaction, score update, win/lose check, restart.
+- Before outputting, mentally run through the code: clicking every button must produce an immediate, visible effect.
+- No empty functions, no \`onclick="null"\`.
 `;
 
   if (isGenerate) {
-    return `You are a world‑class web designer and game developer.
-Create a **complete, ready‑to‑publish HTML page** that works immediately. The page must be a self‑contained web application or game without any server requirements.
+    return `You are a world‑class front‑end developer and game creator.
+Generate a **complete, ready‑to‑publish HTML page** that works immediately.
 
-Response: ONLY a JSON object:
-{ "code": "<full HTML>", "description": "short summary" }
+**Response format:** JSON object with EXACTLY this structure:
+{ "code": "<full HTML>", "description": "one‑sentence summary" }
 
+${baseRules}
 ${layoutInstructions}
 ${gameInstructions}
 ${complexityInstructions}
-${noPromptAlert}
-${keyboardRule}
+${mobileGameSizing}
 ${threeJsRules}
 ${imageRules}
+${interactionRules}
 
-**CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
-- Every button, clickable element, or game interaction must have a working JavaScript event listener (addEventListener, inline onclick). No empty or dummy handlers.
-- For games: implement **all** game logic: initialization, player interaction, scoring, win/lose conditions, and a visible restart mechanism that resets the game state completely.
-- Do NOT use placeholder comments like // TODO or /* implement later */.
-- Actions must cause an immediate, visible update in the DOM or canvas.
-- **Never use \`onclick="null"\` or empty functions.
-
-**GAME REQUIREMENTS:**
-- Start screen (optional but recommended) or immediately playable.
-- Clear game area (canvas or DOM grid).
-- Score display (using <div> or <span>, NOT input).
-- Win/Lose announcement (DOM update).
-- Restart button that works.
-
-**HTML STRUCTURE:**
-- Use <!DOCTYPE html>.
-- Include viewport meta tag for mobile responsiveness.
-- Use <button> for all interactive elements; not <input type="button"> or <a>.
-
-Your entire message must start with \{ and end with \}. No markdown, no commentary.`;
+Your entire message must begin with \`{\` and end with \`}\`. No markdown, no commentary.
+`;
   } else {
+    // ---------- EDIT MODE ----------
     return `You are an expert front‑end developer.
-The current sandbox page:
+The sandbox currently contains a web page. You must write a **JavaScript snippet** that, when executed, modifies the page to match the user’s request.
+
+**How your code will be run:**
+The system will execute it as \`new Function("sandbox", yourCode)(sandboxElement)\`.
+The parameter \`sandbox\` is the container DIV. To access the iframe content:
+
+\`\`\`
+const iframe = sandbox.querySelector('iframe#sandbox-iframe');
+const doc = iframe ? iframe.contentDocument : document;
+\`\`\`
+
+Use \`doc\` to manipulate the DOM. If there is no iframe, fall back to \`sandbox\`.
+
+**Current sandbox content:**
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
 
-Write a **JavaScript snippet** that runs inside the sandbox to fulfill the user's request.
-- Always access the iframe’s document via:
-    const iframe = document.getElementById('sandbox-iframe');
-    const doc = iframe.contentDocument;
-- Use stable DOM methods only.
-${noPromptAlert}
+${baseRules}
 ${layoutInstructions}
 ${gameInstructions}
 ${complexityInstructions}
-${keyboardRule}
+${mobileGameSizing}
 ${threeJsRules}
 ${imageRules}
+${interactionRules}
 
-**CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
-- Any added buttons/elements must respond immediately to clicks/touches.
-- Implement all requested interactions – no empty handlers.
-- If adding a game feature, ensure it is fully playable: add game logic, win conditions, restart if needed.
-- If modifying a 3D scene, follow the Three.js rules above.
+**Response format:** JSON object:
+{ "code": "your JavaScript code", "description": "one‑sentence summary" }
 
-Response: ONLY a JSON object:
-{"code": "pure JS", "description": "one line summary"}
-
-Start with { and end with }. No markdown wrapping.`;
+Start with \`{\` and end with \`}\`. No markdown, no backticks.
+`;
   }
 }
 
@@ -290,12 +238,15 @@ app.post("/chat", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
-    let maxTokens;
-    if (complexity === "simple") {
-      maxTokens = mode === "generate" ? 8000 : 1500;
-    } else {
-      maxTokens = mode === "generate" ? 8000 : 2000;
-    }
+    // Higher token limits to accommodate complete logic
+    const maxTokens =
+      complexity === "simple"
+        ? mode === "generate"
+          ? 10000
+          : 3000
+        : mode === "generate"
+          ? 10000
+          : 4000;
 
     const systemContent = buildSystemPrompt(
       mode,
@@ -304,7 +255,7 @@ app.post("/chat", async (req, res) => {
       device,
       userMessage,
     );
-    const temperature = mode === "generate" ? 0.2 : 0.3;
+    const temperature = mode === "generate" ? 0.1 : 0.2;
 
     const completion = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
@@ -360,12 +311,14 @@ app.post("/chat/stream", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
-    let maxTokens;
-    if (complexity === "simple") {
-      maxTokens = mode === "generate" ? 8000 : 1500;
-    } else {
-      maxTokens = mode === "generate" ? 8000 : 2000;
-    }
+    const maxTokens =
+      complexity === "simple"
+        ? mode === "generate"
+          ? 10000
+          : 3000
+        : mode === "generate"
+          ? 10000
+          : 4000;
 
     const systemContent = buildSystemPrompt(
       mode,
@@ -374,7 +327,7 @@ app.post("/chat/stream", async (req, res) => {
       device,
       userMessage,
     );
-    const temperature = mode === "generate" ? 0.2 : 0.3;
+    const temperature = mode === "generate" ? 0.1 : 0.2;
 
     // SSE headers
     res.setHeader("Content-Type", "text/event-stream");
@@ -462,9 +415,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send(
-    "AI Backend v12 (mobile game sizing, 3D rules, keyboard‑free) is running.",
-  ),
+  res.send("AI Backend v13 (radical fix: working buttons, edit mode fixed)."),
 );
 
 // --------------- Start server ---------------
