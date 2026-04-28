@@ -75,7 +75,7 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (FIXED + ENHANCED) ---------------
+// --------------- Helper: build system prompt (UPDATED) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
@@ -99,6 +99,7 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   * Avoid CSS Grid with large fixed columns; use flexbox column.
   * Touch targets at least 44×44px.
   * **Absolutely no horizontal scrollbars.**
+  * **NO KEYBOARD:** Do NOT use any text input fields, textareas, contenteditable, or <input> elements. All interaction must be via <button>, canvas, or touch events. Do not set autofocus or call .focus() anywhere.
 `;
   } else {
     layoutInstructions = `- **Desktop layout** - responsive, secondary mobile support.`;
@@ -111,8 +112,11 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   * The entire page must be a **single gameplay screen** – no header, navigation, or sections like “home”, “contact”, “about”.
   * Only the game itself (canvas, board, buttons, score, restart) should exist.
   * The layout must be clean and focused on the game mechanics.
-  * **DO NOT use any input fields, textareas, prompt(), or contenteditable.** These would pop up the mobile keyboard, which destroys the game experience.
-  * Disable user‑select and focus outlines where possible to prevent accidental keyboard.
+  * **ABSOLUTELY NO INPUT FIELDS:** Do NOT use any <input>, <textarea>, contenteditable, or any element that triggers a keyboard. Use only <button> elements for interaction.
+  * If a player name is required, hardcode "Player" or use a <button> to start; never ask for text input.
+  * Do not set autofocus or call .focus().
+  * Use CSS \`touch-action: manipulation;\` on all interactive elements to prevent zoom.
+  * Use \`user-select: none;\` to avoid text selection.
 `;
   } else {
     gameInstructions = `- If a standard website, include header, main, footer, etc.`;
@@ -120,13 +124,24 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
 
   let complexityInstructions =
     complexity === "simple"
-      ? `- **Simple Mode**: Keep code LINEAR and SHORT. Use minimal DOM, minimal CSS, and absolutely no unnecessary text. All game logic/interactions MUST be fully implemented and working. NO placeholder comments like \`// TODO\`. If you run out of tokens, prioritize functionality over styling.`
-      : `- **Advanced Mode**: Richer styling and animations.`;
+      ? `- **Simple Mode**: Keep code LINEAR and SHORT, BUT the game/website MUST BE FULLY FUNCTIONAL. Implement all game logic: start, play, win/lose detection, scoring, and a working restart button. No placeholder alerts. Every button must do something. Prioritize working mechanics over styling. If you are low on tokens, make the game logic compact but complete.`
+      : `- **Advanced Mode**: Richer styling and animations, but still fully functional.`;
 
   const noPromptAlert =
-    "- **NEVER** use `prompt()`, `alert()`, `document.write()`, `<input>`, `<textarea>`, or `contenteditable` unless the user explicitly asks for a form. For games, strictly avoid them.";
+    "- **NEVER** use `prompt()`, `alert()`, `document.write()`, `confirm()`, or any kind of popup. For feedback, update the DOM. In games, absolutely no <input>, <textarea>, or contenteditable. Use only <button> for actions.";
 
-  // ⭐ NEW: Contextual image rules
+  // New explicit keyboard rule for games
+  const keyboardRule = isGame
+    ? `
+**📱 MOBILE KEYBOARD PREVENTION (GAMES ONLY):**
+- DO NOT include any element that can receive text input: no <input>, no <textarea>, no contenteditable, no [type="text"], no [type="email"], nothing.
+- Do not use prompt(), alert(), confirm().
+- Do not set autofocus attribute.
+- Do not call .focus() anywhere.
+- Use only <button> elements for all user interactions.
+`
+    : "";
+
   const imageRules = `
 **🖼️ IMAGE RULES (CRITICAL):**
 - ALWAYS use absolute, working image URLs starting with "https://".
@@ -144,8 +159,8 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
 `;
 
   if (isGenerate) {
-    return `You are a world‑class web designer.
-Create a **complete, ready‑to‑publish HTML page**.
+    return `You are a world‑class web designer and game developer.
+Create a **complete, ready‑to‑publish HTML page** that works immediately. The page must be a self‑contained web application or game without any server requirements.
 
 Response: ONLY a JSON object:
 { "code": "<full HTML>", "description": "short summary" }
@@ -154,19 +169,29 @@ ${layoutInstructions}
 ${gameInstructions}
 ${complexityInstructions}
 ${noPromptAlert}
+${keyboardRule}
 ${imageRules}
 
 **CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
-- If your page contains **any buttons, clickable elements, or game interactions**, you MUST add actual JavaScript event listeners (addEventListener, onclick, etc.) that make them fully functional.
-- For games: implement **all** game logic, scoring, win/lose conditions, and a restart mechanism.
-- **No placeholder alerts** – actions must visibly update the page.
-- Test your code mentally: clicking a button must produce an immediate, visible effect.
-- **Never use onclick="null" or empty handlers.**
+- Every button, clickable element, or game interaction must have a working JavaScript event listener (addEventListener, inline onclick). No empty or dummy handlers.
+- For games: implement **all** game logic: initialization, player interaction, scoring, win/lose conditions, and a visible restart mechanism that resets the game state completely.
+- Do NOT use placeholder comments like // TODO or /* implement later */.
+- Actions must cause an immediate, visible update in the DOM or canvas.
+- **Never use \`onclick="null"\` or empty functions.
 
-**REQUIREMENTS**:
-- Real content, no lorem ipsum.
-- If a **game**, it must be playable immediately – all logic, scoring, and win/lose conditions included.
-- Your entire message must start with { and end with }. No markdown, no commentary.`;
+**GAME REQUIREMENTS:**
+- Start screen (optional but recommended) or immediately playable.
+- Clear game area (canvas or DOM grid).
+- Score display (using <div> or <span>, NOT input).
+- Win/Lose announcement (DOM update).
+- Restart button that works.
+
+**HTML STRUCTURE:**
+- Use <!DOCTYPE html>.
+- Include viewport meta tag for mobile responsiveness.
+- Use <button> for all interactive elements; not <input type="button"> or <a>.
+
+Your entire message must start with \{ and end with \}. No markdown, no commentary.`;
   } else {
     return `You are an expert front‑end developer.
 The current sandbox page:
@@ -183,11 +208,13 @@ ${noPromptAlert}
 ${layoutInstructions}
 ${gameInstructions}
 ${complexityInstructions}
+${keyboardRule}
 ${imageRules}
 
 **CRITICAL INTERACTIVITY RULES (MUST FOLLOW):**
 - Any added buttons/elements must respond immediately to clicks/touches.
 - Implement all requested interactions – no empty handlers.
+- If adding a game feature, ensure it is fully playable: add game logic, win conditions, restart if needed.
 
 Response: ONLY a JSON object:
 {"code": "pure JS", "description": "one line summary"}
@@ -217,9 +244,9 @@ app.post("/chat", async (req, res) => {
 
     let maxTokens;
     if (complexity === "simple") {
-      maxTokens = mode === "generate" ? 5000 : 1500;
+      maxTokens = mode === "generate" ? 8000 : 1500;
     } else {
-      maxTokens = mode === "generate" ? 6000 : 2000;
+      maxTokens = mode === "generate" ? 8000 : 2000;
     }
 
     const systemContent = buildSystemPrompt(
@@ -287,9 +314,9 @@ app.post("/chat/stream", async (req, res) => {
 
     let maxTokens;
     if (complexity === "simple") {
-      maxTokens = mode === "generate" ? 5000 : 1500;
+      maxTokens = mode === "generate" ? 8000 : 1500;
     } else {
-      maxTokens = mode === "generate" ? 6000 : 2000;
+      maxTokens = mode === "generate" ? 8000 : 2000;
     }
 
     const systemContent = buildSystemPrompt(
@@ -388,7 +415,7 @@ app.post("/ask", async (req, res) => {
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
   res.send(
-    "AI Backend v9 (contextual images, fixed games, mobile UI) is running.",
+    "AI Backend v10 (strengthened prompts, full game logic, no keyboard) is running.",
   ),
 );
 
