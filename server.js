@@ -75,7 +75,7 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (RADICALLY SIMPLIFIED) ---------------
+// --------------- Helper: build system prompt (FORCED FUNCTIONAL) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
@@ -96,126 +96,78 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     lowerMsg.includes("webgl") ||
     lowerMsg.includes("3d game");
 
-  // --- Base rules for every request ---
-  const baseRules = `
-**Non‑negotiable rules:**
-- NEVER use \`prompt()\`, \`alert()\`, \`document.write()\`, or \`confirm()\`. Show everything in the DOM.
-- NEVER use \`<input>\`, \`<textarea>\`, \`contenteditable\` (that would open the keyboard on mobile). Use only \`<button>\`.
-- Do NOT call \`.focus()\` or set \`autofocus\`.
-- Use \`touch-action: manipulation;\` and \`user-select: none;\` on interactive elements.
+  // ---------- ABSOLUTE RULES (short, clear, mandatory) ----------
+  const mandatoryRules = `
+**MANDATORY RULES – if you break any of these your output is invalid:**
+1. **NO inline onclick attributes.** Do NOT use \`onclick="..."\` in HTML tags. Attach all click handlers using \`addEventListener\` inside a single \`<script>\` block at the end of \`<body>\`. Make sure every function that handles an event is defined in that same script.
+2. **NO \`<input>\`, \`<textarea>\`, \`contenteditable\`** – these open the mobile keyboard. Use only \`<button>\` for actions.
+3. **NO \`prompt()\`, \`alert()\`, \`confirm()\`, \`document.write()\`** – never use them.
+4. **Do NOT call \`.focus()\`** or set \`autofocus\`.
+5. Every button must perform a visible action (change DOM, update score, move a piece, etc.). If a button exists, it **must** work.
+6. **For games:** implement the full game loop – start, play, score, win/lose, restart. No placeholder functions.
+7. **Before outputting, mentally test every interactive element.** If any function is missing or undefined, fix it.
 `;
 
-  // --- Layout instructions ---
-  let layoutInstructions = isMobile
-    ? `**Mobile layout (strict):** Single vertical column, no horizontal scroll. Use percentages/flex. Touch targets at least 44×44px. **Do NOT add any text input (**no keyboard**).** All interaction through buttons or canvas.`
-    : `**Desktop layout:** Responsive with secondary mobile support.`;
+  // ---------- layout / game / 3d extensions ----------
+  const layout = isMobile
+    ? `**Mobile layout:** Portrait, no horizontal scroll, use flex column. Use \`touch-action: manipulation; user-select: none;\` on interactive elements. Keep UI inside a 5‑10% safe margin.`
+    : `**Desktop layout:** responsive, supported on mobile too.`;
 
-  // --- Game specific ---
-  let gameInstructions = isGame
-    ? `**YOU ARE BUILDING A GAME.** The page must be a single gameplay screen – no header/footer. Include a score display (DOM <div> or <span>), win/lose announcement, and a fully working restart button.`
-    : `**This is a website.** Include typical sections: header, main, footer.`;
+  const gameExtra = isGame
+    ? `**This is a game.** Single game screen, no header/footer. Score and restart button must be present and working.`
+    : `**This is a website.** Include header, main content, footer.`;
 
-  // --- Complexity ---
-  let complexityInstructions = isSimple
-    ? `**Simple mode:** Keep code compact BUT **fully functional**. Implement ALL game logic – scoring, win/loss, restart. No placeholder comments like "// TODO".`
-    : `**Advanced mode:** Richer styling and animations, still fully functional.`;
+  const complexityExtra = isSimple
+    ? `**Simple mode:** Keep code compact but **fully functional**. No styling fluff – all functionality must work.`
+    : `**Advanced mode:** Polished styling and animations, but still fully functional.`;
 
-  // --- Mobile game sizing (only when mobile + game) ---
-  let mobileGameSizing = "";
-  if (isMobile && isGame) {
-    mobileGameSizing = `
-**Mobile game sizing:**
-- Design for a **9:16** portrait aspect ratio (base 1080×1920, scale to 720×1280).
-- Keep critical UI (score, buttons, canvas) inside a **5‑10% safe margin** from the screen edges.
-- Use \`vw\`, \`vh\`, or relative units so everything scales.
-`;
-  }
+  const mobileSizing =
+    isMobile && isGame
+      ? `**Mobile game sizing:** Design for 9:16 (1080×1920), scale to 720×1280. Use relative units.`
+      : "";
 
-  // --- 3D/Three.js rules ---
-  let threeJsRules = "";
-  if (is3D) {
-    threeJsRules = `
-**Three.js 3D game – MUST FOLLOW:**
-1. Include scene, camera, renderer, animate loop.
-2. Append renderer to body (or a container) – fill the screen.
-3. At least one visible object (e.g., a ground cube).
-4. Camera placed to see the objects immediately.
-5. Window resize handler.
-6. Lights only if using non‑basic materials.
-7. Use Three.js from CDN (no build tools).
-8. Avoid undefined variables; prefer simple geometries.
-9. **Mobile‑first controls:** use touch events (touchstart/move/end) + mouse fallback.
-10. **No text input. No keyboard.** Use on‑screen buttons or touch gestures.
-11. If something might break rendering, remove it.
-12. Output **only** the complete HTML code, starting with \`<!DOCTYPE html>\`.
-`;
-  }
+  const threeD = is3D
+    ? `**3D game (Three.js):** Include scene, camera, renderer, animate loop. Append renderer to body. Use touch events for mobile. No keyboard. Simple geometry. Import Three.js from CDN: \`https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.min.js\`.`
+    : "";
 
-  // --- Image rules ---
-  const imageRules = `**Images:** Use absolute HTTPS URLs (e.g., https://picsum.photos/400/300 or https://source.unsplash.com/featured/?{topic}). Never local paths.`;
+  const imageRules = `**Images:** Always use absolute HTTPS URLs (\`https://picsum.photos/400/300\` or \`https://source.unsplash.com/featured/?{topic}\`). Never local paths.`;
 
-  // --- Final interaction rules ---
-  const interactionRules = `
-**CRITICAL – EVERY BUTTON MUST WORK:**
-- Every clickable element must have a real JavaScript handler (addEventListener or inline onclick) that does something visible.
-- For games: implement **full game loop** – initial state, player interaction, score update, win/lose check, restart.
-- Before outputting, mentally run through the code: clicking every button must produce an immediate, visible effect.
-- No empty functions, no \`onclick="null"\`.
-`;
-
-  if (isGenerate) {
-    return `You are a world‑class front‑end developer and game creator.
-Generate a **complete, ready‑to‑publish HTML page** that works immediately.
-
-**Response format:** JSON object with EXACTLY this structure:
+  const generateEnding = `**Output format:** ONLY a JSON object:
 { "code": "<full HTML>", "description": "one‑sentence summary" }
+Your entire message must start with \`{\` and end with \`}\`. No markdown or explanation.`;
 
-${baseRules}
-${layoutInstructions}
-${gameInstructions}
-${complexityInstructions}
-${mobileGameSizing}
-${threeJsRules}
-${imageRules}
-${interactionRules}
-
-Your entire message must begin with \`{\` and end with \`}\`. No markdown, no commentary.
-`;
-  } else {
-    // ---------- EDIT MODE ----------
-    return `You are an expert front‑end developer.
-The sandbox currently contains a web page. You must write a **JavaScript snippet** that, when executed, modifies the page to match the user’s request.
-
-**How your code will be run:**
-The system will execute it as \`new Function("sandbox", yourCode)(sandboxElement)\`.
+  const editEnding = `**How your code is executed:**
+\`\`\`
+new Function("sandbox", yourCode)(sandboxElement)
+\`\`\`
 The parameter \`sandbox\` is the container DIV. To access the iframe content:
-
 \`\`\`
 const iframe = sandbox.querySelector('iframe#sandbox-iframe');
-const doc = iframe ? iframe.contentDocument : document;
+const doc = iframe ? iframe.contentDocument : sandbox.ownerDocument;
 \`\`\`
-
-Use \`doc\` to manipulate the DOM. If there is no iframe, fall back to \`sandbox\`.
+Use \`doc\` for all DOM changes.
 
 **Current sandbox content:**
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
 
-${baseRules}
-${layoutInstructions}
-${gameInstructions}
-${complexityInstructions}
-${mobileGameSizing}
-${threeJsRules}
+${mandatoryRules}
+**Output format:** { "code": "your JavaScript code", "description": "brief summary" }`;
+
+  if (isGenerate) {
+    return `You are a front‑end expert. Write a complete, self‑contained HTML page.
+${mandatoryRules}
+${layout}
+${gameExtra}
+${complexityExtra}
+${mobileSizing}
+${threeD}
 ${imageRules}
-${interactionRules}
-
-**Response format:** JSON object:
-{ "code": "your JavaScript code", "description": "one‑sentence summary" }
-
-Start with \`{\` and end with \`}\`. No markdown, no backticks.
-`;
+${generateEnding}`;
+  } else {
+    return `You are a front‑end expert. Write JavaScript that modifies the sandbox page.
+${editEnding}`;
   }
 }
 
@@ -238,7 +190,6 @@ app.post("/chat", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
-    // Higher token limits to accommodate complete logic
     const maxTokens =
       complexity === "simple"
         ? mode === "generate"
@@ -255,7 +206,7 @@ app.post("/chat", async (req, res) => {
       device,
       userMessage,
     );
-    const temperature = mode === "generate" ? 0.1 : 0.2;
+    const temperature = 0.0; // deterministic as possible
 
     const completion = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
@@ -327,7 +278,7 @@ app.post("/chat/stream", async (req, res) => {
       device,
       userMessage,
     );
-    const temperature = mode === "generate" ? 0.1 : 0.2;
+    const temperature = 0.0;
 
     // SSE headers
     res.setHeader("Content-Type", "text/event-stream");
@@ -415,7 +366,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v13 (radical fix: working buttons, edit mode fixed)."),
+  res.send("AI Backend v14 (forced addEventListener – no broken onclick)."),
 );
 
 // --------------- Start server ---------------
