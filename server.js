@@ -1,4 +1,4 @@
-// server.js – AI backend for Render (full CORS, streaming + non‑streaming + game spec)
+// server.js – AI backend for Render (full CORS, streaming + non‑streaming)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -75,7 +75,7 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (OLD, kept for fallback) ---------------
+// --------------- Helper: build system prompt (ALL CHANGES BELOW) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
@@ -259,98 +259,6 @@ ${editEnding}`;
 }
 
 // ============================
-//  Game spec system prompt (NEW)
-// ============================
-function gameSpecSystemPrompt() {
-  return `You are a game designer. Convert the user's request into a JSON "Game Spec" that a deterministic engine can run.
-The engine supports these systems:
-- velocity_system: applies gravity and moves entities.
-- player_control_system: keyboard control (arrows + space to shoot).
-- ai_system: behaviors (wander, chase, idle).
-- collision_damage_system: circle collision, damages entities.
-- health_system: (auto-run after collision).
-- render_system: draws shapes (circle, rect, triangle) on canvas.
-- time-based events: spawn entities on intervals.
-- rules: win_condition, fail_condition (all_enemies_defeated, player_health_zero, etc.)
-
-Game Spec JSON structure (MUST be exactly this format, no extra fields):
-{
-  "world": {
-    "type": "canvas2d",
-    "width": 800,
-    "height": 600,
-    "background": "#000",
-    "gravity": { "x": 0, "y": 0.2 }
-  },
-  "entities": [
-    {
-      "id": "player",
-      "type": "ship",
-      "position": { "x": 400, "y": 500 },
-      "components": [
-        { "type": "renderable", "params": { "shape": "triangle", "color": "#0f0", "size": 20 } },
-        { "type": "velocity", "params": { "maxSpeed": 5 } },
-        { "type": "health", "params": { "max": 100 } },
-        { "type": "player_controlled", "params": { "speed": 5 } },
-        { "type": "weapon", "params": { "cooldown": 10, "projectile": "bullet" } }
-      ]
-    },
-    {
-      "id": "enemy1",
-      "type": "enemy",
-      "position": { "x": 200, "y": 100 },
-      "components": [
-        { "type": "renderable", "params": { "shape": "circle", "color": "#f00", "size": 15 } },
-        { "type": "velocity", "params": { "maxSpeed": 2 } },
-        { "type": "health", "params": { "max": 30 } },
-        { "type": "ai_behavior", "params": { "behavior": "chase", "speed": 2 } }
-      ]
-    }
-  ],
-  "systems": [
-    "velocity_system",
-    "player_control_system",
-    "ai_system",
-    "collision_damage_system",
-    "health_system",
-    "render_system"
-  ],
-  "rules": {
-    "win_condition": "all_enemies_defeated",
-    "fail_condition": "player_health_zero"
-  },
-  "events": [
-    {
-      "trigger": "time",
-      "params": { "interval": 3000 },
-      "action": "spawn_entity",
-      "entity_template": {
-        "type": "enemy",
-        "components": [
-          { "type": "renderable", "params": { "shape": "circle", "color": "#f00", "size": 15 } },
-          { "type": "velocity", "params": { "maxSpeed": 1.5 } },
-          { "type": "health", "params": { "max": 20 } },
-          { "type": "ai_behavior", "params": { "behavior": "wander", "speed": 1.5 } }
-        ]
-      }
-    }
-  ]
-}
-
-Rules:
-- Only output the JSON object, no extra text.
-- All entities must have position and components.
-- At least one entity must have "player_controlled".
-- Win and fail conditions are required.
-- Components like renderable, velocity, health, etc. are as shown.
-- Use the systems array to specify the order (must include at least those needed).
-- The world can have a background color and gravity.
-- Events are optional but encouraged.
-
-Now, based on the user's message, generate a game spec.`;
-}
-
-// ============================
 //  POST /chat – Build / Edit (non‑streaming fallback)
 // ============================
 app.post("/chat", async (req, res) => {
@@ -369,6 +277,7 @@ app.post("/chat", async (req, res) => {
     const userMessage =
       messages.length > 0 ? messages[messages.length - 1].content : "";
 
+    // Higher token limits for complete logic
     const maxTokens =
       complexity === "simple"
         ? mode === "generate"
@@ -517,62 +426,7 @@ app.post("/chat/stream", async (req, res) => {
 });
 
 // ============================
-//  POST /game/generate – New Game Spec endpoint
-// ============================
-app.post("/game/generate", async (req, res) => {
-  try {
-    const { messages } = req.body;
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: "messages array required" });
-    }
-
-    const systemContent = gameSpecSystemPrompt();
-
-    const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash",
-      messages: [{ role: "system", content: systemContent }, ...messages],
-      temperature: 0.0,
-      max_tokens: 3000,
-      response_format: { type: "json_object" },
-    });
-
-    const text = completion.choices[0].message.content;
-    let spec;
-    try {
-      spec = JSON.parse(text);
-    } catch (e) {
-      return res.json({ error: "Invalid JSON from AI", fallback: true });
-    }
-
-    // Basic validation
-    if (!spec.world || !spec.entities || !spec.rules) {
-      return res.json({
-        error: "Missing required spec fields",
-        fallback: true,
-      });
-    }
-
-    const hasPlayer = spec.entities.some((e) =>
-      e.components?.some((c) => c.type === "player_controlled"),
-    );
-    if (!hasPlayer) {
-      return res.json({ error: "No playable entity found", fallback: true });
-    }
-
-    if (!spec.rules.win_condition || !spec.rules.fail_condition) {
-      return res.json({ error: "Missing win/fail conditions", fallback: true });
-    }
-
-    // Success
-    res.json({ spec, description: "Game specification generated." });
-  } catch (err) {
-    console.error("/game/generate error:", err);
-    res.status(500).json({ error: err.message, fallback: true });
-  }
-});
-
-// ============================
-//  POST /ask – Page assistant (unchanged)
+//  POST /ask – Page assistant
 // ============================
 app.post("/ask", async (req, res) => {
   try {
@@ -600,7 +454,9 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v16 (game spec engine + fallback) is running."),
+  res.send(
+    "AI Backend v15 (core mechanic enforcement, module support) is running.",
+  ),
 );
 
 // --------------- Start server ---------------
