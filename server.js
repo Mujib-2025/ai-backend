@@ -110,6 +110,7 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
 
 8. **FULL GAME REQUIREMENT:**
 If you generate a game, it MUST include:
+- fully functional with full core game mechanism playable
 - Start state (game initializes correctly)
 - Game loop (update + render using requestAnimationFrame if needed)
 - Player interaction (touch/mouse)
