@@ -1,4 +1,4 @@
-// server.js – AI backend for Render (full CORS, streaming + non‑streaming)
+// server.js – Mobile‑only AI backend (strict vertical rectangle, core game mechanics #1)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -75,10 +75,9 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (ALL CHANGES BELOW) ---------------
-function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
+// --------------- Helper: build system prompt (MOBILE ONLY) ---------------
+function buildSystemPrompt(mode, sandboxHTML, complexity, userMessage) {
   const isGenerate = mode === "generate";
-  const isMobile = device === "mobile";
   const isSimple = complexity === "simple";
 
   const lowerMsg = (userMessage || "").toLowerCase();
@@ -96,7 +95,7 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     lowerMsg.includes("webgl") ||
     lowerMsg.includes("3d game");
 
-  // ---------- NEW MANDATORY RULES (merged with old ones) ----------
+  // ---------- MANDATORY RULES (enhanced for mobile + core mechanic) ----------
   const mandatoryRules = `
 **MANDATORY RULES – if you break any of these your output is invalid:**
 
@@ -110,7 +109,6 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
 
 8. **FULL GAME REQUIREMENT:**
 If you generate a game, it MUST include:
-- fully functional with full core game mechanism playable
 - Start state (game initializes correctly)
 - Game loop (update + render using requestAnimationFrame if needed)
 - Player interaction (touch/mouse)
@@ -125,7 +123,7 @@ No setup steps, no missing logic.
 10. **Before outputting, mentally simulate gameplay.**
 If the game cannot be played from start to finish, fix it.
 
-11. **CORE MECHANIC REQUIREMENT:**
+11. **CORE MECHANIC REQUIREMENT (TOP PRIORITY):**
 The main mechanic of the app/game MUST be implemented and visible.
 - Identify the primary mechanic from the user request
 - That mechanic MUST exist as working code (not just UI)
@@ -142,15 +140,21 @@ All core behavior must be driven by real state variables that change during exec
 If no state changes, the app is considered non-functional.
 
 14. **If using external libraries (like Three.js), you MUST use ES modules and <script type="module">.**
+
+15. **STRICT MOBILE VERTICAL RECTANGLE:**
+- Design for a PORTRAIT mobile screen (9:16 ratio).
+- Use flex column, no horizontal scroll.
+- Fit everything within a 5–10% safe margin.
+- Use \`touch-action: manipulation; user-select: none;\` on interactive elements.
+- All controls must be touch‑friendly (buttons ≥ 44px tap target).
+- No keyboard controls.
 `;
 
-  // ---------- layout / game / 3d extensions ----------
-  const layout = isMobile
-    ? `**Mobile layout:** Portrait, no horizontal scroll, use flex column. Use \`touch-action: manipulation; user-select: none;\` on interactive elements. Keep UI inside a 5‑10% safe margin.`
-    : `**Desktop layout:** responsive, supported on mobile too.`;
+  // ---------- layout / game / 3d extensions (mobile only) ----------
+  const layout = `**Mobile layout:** Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units (vw, vh, %).`;
 
   const gameExtra = isGame
-    ? `**This is a COMPLETE GAME.**
+    ? `**This is a COMPLETE MOBILE GAME.**
 
 Requirements:
 - The game must be fully playable from start to finish
@@ -158,26 +162,22 @@ Requirements:
 - Include clear win OR lose condition
 - Include a restart button that resets ALL state
 - No placeholder mechanics — everything must function
+- Only touch controls (tap, swipe, drag)
 
 Game loop:
 - Use requestAnimationFrame if animation is involved
 - Continuously update game state and render
 
-Interaction:
-- Must support touch (and mouse if desktop)
-- No keyboard controls
-
 If any part of the game is missing or non-functional, the output is INVALID.`
-    : `**This is a website.** Include header, main content, footer.`;
+    : `**This is a mobile website.** Include header, main content, footer. Keep it vertical.`;
 
   const complexityExtra = isSimple
     ? `**Simple mode:** Keep code compact but **fully functional**. No styling fluff – all functionality must work.`
     : `**Advanced mode:** Polished styling and animations, but still fully functional.`;
 
-  const mobileSizing =
-    isMobile && isGame
-      ? `**Mobile game sizing:** Design for 9:16 (1080×1920), scale to 720×1280. Use relative units.`
-      : "";
+  const mobileSizing = isGame
+    ? `**Mobile game sizing:** Design for 9:16 (1080×1920), scale to 720×1280. Use relative units.`
+    : "";
 
   const threeD = is3D
     ? `**3D game (Three.js):**
@@ -215,7 +215,7 @@ Use simple geometry only.`
 - Game must reach a win or lose state
 - Restart must fully reset the game
 - The main mechanic is present and functional
-- If the main mechanic is missing or not working, FIX it before outputting
+- The design fits a vertical mobile rectangle
 
 The HTML MUST:
 - Be a complete document (<!DOCTYPE html>)
@@ -244,7 +244,7 @@ ${mandatoryRules}
 **Output format:** { "code": "your JavaScript code", "description": "brief summary" }`;
 
   if (isGenerate) {
-    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page.
+    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page STRICTLY for mobile portrait.
 ${mandatoryRules}
 ${layout}
 ${gameExtra}
@@ -254,7 +254,7 @@ ${threeD}
 ${imageRules}
 ${generateEnding}`;
   } else {
-    return `You are an expert front‑end developer. Write JavaScript that modifies the sandbox page.
+    return `You are an expert front‑end developer. Write JavaScript that modifies the sandbox page (mobile only).
 ${editEnding}`;
   }
 }
@@ -269,7 +269,6 @@ app.post("/chat", async (req, res) => {
       mode = "edit",
       sandboxHTML = "",
       complexity = "simple",
-      device = "desktop",
     } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array required" });
@@ -292,7 +291,6 @@ app.post("/chat", async (req, res) => {
       mode,
       sandboxHTML,
       complexity,
-      device,
       userMessage,
     );
     const temperature = 0.0;
@@ -342,7 +340,6 @@ app.post("/chat/stream", async (req, res) => {
       mode = "edit",
       sandboxHTML = "",
       complexity = "simple",
-      device = "desktop",
     } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array required" });
@@ -364,7 +361,6 @@ app.post("/chat/stream", async (req, res) => {
       mode,
       sandboxHTML,
       complexity,
-      device,
       userMessage,
     );
     const temperature = 0.0;
@@ -436,7 +432,7 @@ app.post("/ask", async (req, res) => {
 
     const systemMessage = {
       role: "system",
-      content: `You are a helpful assistant. The user is viewing a web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Do NOT include any code in your answer unless explicitly asked; provide clear, concise explanations.`,
+      content: `You are a helpful assistant. The user is viewing a mobile web page whose content is:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\n\nAnswer the user's question about it. Do NOT include any code in your answer unless explicitly asked; provide clear, concise explanations.`,
     };
 
     const completion = await client.chat.completions.create({
@@ -456,7 +452,7 @@ app.post("/ask", async (req, res) => {
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
   res.send(
-    "AI Backend v15 (core mechanic enforcement, module support) is running.",
+    "AI Backend v16 (mobile‑only, core mechanic enforcement) is running.",
   ),
 );
 
