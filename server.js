@@ -1,10 +1,7 @@
-// server.js – AI backend (full CORS, streaming + non‑streaming)
-// Game generation now uses /generate-spec – AI configures a deterministic engine,
-// never generates code.
+// server.js – AI backend for Render (full CORS, streaming + non‑streaming + game spec)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
-const path = require("path");
 
 const app = express();
 
@@ -78,15 +75,12 @@ function extractCodeFromRawText(text, mode) {
   return null;
 }
 
-// --------------- Helper: build system prompt (ORIGINAL – used by /chat) ---------------
+// --------------- Helper: build system prompt (OLD, kept for fallback) ---------------
 function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
-  // (unchanged from your original server.js – kept for non‑game editing)
-  // ... full original function here ...
-  // (I'm omitting the full repeated code for brevity – keep your existing implementation)
-  // This function is used only by the old /chat endpoints.
   const isGenerate = mode === "generate";
   const isMobile = device === "mobile";
   const isSimple = complexity === "simple";
+
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
     lowerMsg.includes("game") ||
@@ -94,6 +88,7 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     lowerMsg.includes("tic") ||
     lowerMsg.includes("snake") ||
     lowerMsg.includes("puzzle");
+
   const is3D =
     lowerMsg.includes("3d") ||
     lowerMsg.includes("three.js") ||
@@ -101,156 +96,262 @@ function buildSystemPrompt(mode, sandboxHTML, complexity, device, userMessage) {
     lowerMsg.includes("webgl") ||
     lowerMsg.includes("3d game");
 
-  const mandatoryRules = `...`; // your existing rules
-  const layout = isMobile
-    ? `**Mobile layout:** ...`
-    : `**Desktop layout:** ...`;
-  const gameExtra = isGame ? `...` : `...`;
-  const complexityExtra = isSimple ? `...` : `...`;
-  const mobileSizing = isMobile && isGame ? `...` : "";
-  const threeD = is3D ? `...` : "";
-  const imageRules = `...`;
+  // ---------- NEW MANDATORY RULES (merged with old ones) ----------
+  const mandatoryRules = `
+**MANDATORY RULES – if you break any of these your output is invalid:**
 
-  const generateEnding = `...`;
-  const editEnding = `...`;
+1. NO inline onclick attributes. Use addEventListener in a single <script> at end of <body>.
+2. NO <input>, <textarea>, contenteditable.
+3. NO alert(), prompt(), confirm(), document.write().
+4. Do NOT call .focus() or use autofocus.
+5. Every button MUST perform a visible action.
+6. ALL functions referenced MUST be defined.
+7. No placeholder code, no TODOs, no comments like "implement later".
+
+8. **FULL GAME REQUIREMENT:**
+If you generate a game, it MUST include:
+- Start state (game initializes correctly)
+- Game loop (update + render using requestAnimationFrame if needed)
+- Player interaction (touch/mouse)
+- Game logic (movement, rules, collisions, etc.)
+- Score system (visible and updating)
+- Win OR lose condition
+- Restart button that fully resets the game
+
+9. **The game must be immediately playable on load.**
+No setup steps, no missing logic.
+
+10. **Before outputting, mentally simulate gameplay.**
+If the game cannot be played from start to finish, fix it.
+
+11. **CORE MECHANIC REQUIREMENT:**
+The main mechanic of the app/game MUST be implemented and visible.
+- Identify the primary mechanic from the user request
+- That mechanic MUST exist as working code (not just UI)
+- The mechanic MUST update over time or through interaction
+- The mechanic MUST affect the game state (position, score, objects, etc.)
+If the main mechanic is missing, static, or not functional, the output is INVALID.
+
+12. **NO FAKE IMPLEMENTATIONS:**
+Do NOT simulate functionality with static visuals.
+Do NOT create UI that suggests behavior without implementing it in JavaScript.
+
+13. **STATE DRIVEN LOGIC:**
+All core behavior must be driven by real state variables that change during execution.
+If no state changes, the app is considered non-functional.
+
+14. **If using external libraries (like Three.js), you MUST use ES modules and <script type="module">.**
+`;
+
+  // ---------- layout / game / 3d extensions ----------
+  const layout = isMobile
+    ? `**Mobile layout:** Portrait, no horizontal scroll, use flex column. Use \`touch-action: manipulation; user-select: none;\` on interactive elements. Keep UI inside a 5‑10% safe margin.`
+    : `**Desktop layout:** responsive, supported on mobile too.`;
+
+  const gameExtra = isGame
+    ? `**This is a COMPLETE GAME.**
+
+Requirements:
+- The game must be fully playable from start to finish
+- Include a visible score counter that updates live
+- Include clear win OR lose condition
+- Include a restart button that resets ALL state
+- No placeholder mechanics — everything must function
+
+Game loop:
+- Use requestAnimationFrame if animation is involved
+- Continuously update game state and render
+
+Interaction:
+- Must support touch (and mouse if desktop)
+- No keyboard controls
+
+If any part of the game is missing or non-functional, the output is INVALID.`
+    : `**This is a website.** Include header, main content, footer.`;
+
+  const complexityExtra = isSimple
+    ? `**Simple mode:** Keep code compact but **fully functional**. No styling fluff – all functionality must work.`
+    : `**Advanced mode:** Polished styling and animations, but still fully functional.`;
+
+  const mobileSizing =
+    isMobile && isGame
+      ? `**Mobile game sizing:** Design for 9:16 (1080×1920), scale to 720×1280. Use relative units.`
+      : "";
+
+  const threeD = is3D
+    ? `**3D game (Three.js):**
+Use ES modules only.
+
+You MUST:
+- Use <script type="module"> (not a normal script)
+- Import Three.js like this:
+  import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js';
+
+Include:
+- scene
+- camera
+- renderer
+- animation loop (requestAnimationFrame)
+
+Append renderer.domElement to document.body.
+
+Controls:
+- Mobile touch only (no keyboard)
+
+Use simple geometry only.`
+    : "";
+
+  const imageRules = `**Images:** Always use absolute HTTPS URLs (\`https://picsum.photos/400/300\` or \`https://source.unsplash.com/featured/?{topic}\`). Never local paths.`;
+
+  // ---------- generate / edit endings ----------
+  const generateEnding = `**Output format:** ONLY a JSON object:
+{ "code": "<full HTML>", "description": "one-sentence summary" }
+
+**CRITICAL VALIDATION BEFORE OUTPUT:**
+- The game (if any) must run without errors
+- All buttons must work
+- Score must update correctly
+- Game must reach a win or lose state
+- Restart must fully reset the game
+- The main mechanic is present and functional
+- If the main mechanic is missing or not working, FIX it before outputting
+
+The HTML MUST:
+- Be a complete document (<!DOCTYPE html>)
+- Place ALL JavaScript inside a single <script> at end of <body>
+- If Three.js is used, that script MUST be <script type="module">
+
+Your entire message must start with \`{\` and end with \`}\`. No markdown or explanation.`;
+
+  const editEnding = `**How your code is executed:**
+\`\`\`
+new Function("sandbox", yourCode)(sandboxElement)
+\`\`\`
+The parameter \`sandbox\` is the container DIV. To access the iframe content:
+\`\`\`
+const iframe = sandbox.querySelector('iframe#sandbox-iframe');
+const doc = iframe ? iframe.contentDocument : sandbox.ownerDocument;
+\`\`\`
+Use \`doc\` for all DOM changes.
+
+**Current sandbox content:**
+\`\`\`html
+${sandboxHTML || "(empty)"}
+\`\`\`
+
+${mandatoryRules}
+**Output format:** { "code": "your JavaScript code", "description": "brief summary" }`;
 
   if (isGenerate) {
-    return `You are an expert front‑end developer... ${mandatoryRules} ...${generateEnding}`;
+    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page.
+${mandatoryRules}
+${layout}
+${gameExtra}
+${complexityExtra}
+${mobileSizing}
+${threeD}
+${imageRules}
+${generateEnding}`;
   } else {
-    return `You are an expert front‑end developer... ${editEnding}`;
+    return `You are an expert front‑end developer. Write JavaScript that modifies the sandbox page.
+${editEnding}`;
   }
 }
 
-// ================================================
-//  NEW GAME CONFIGURATOR – /generate-spec
-// ================================================
-function buildGameSpecPrompt(userMessage) {
-  return `You are a **game configurator**, not a code generator.
-You must output a single JSON object that conforms to the **Unified Game Spec** format.
+// ============================
+//  Game spec system prompt (NEW)
+// ============================
+function gameSpecSystemPrompt() {
+  return `You are a game designer. Convert the user's request into a JSON "Game Spec" that a deterministic engine can run.
+The engine supports these systems:
+- velocity_system: applies gravity and moves entities.
+- player_control_system: keyboard control (arrows + space to shoot).
+- ai_system: behaviors (wander, chase, idle).
+- collision_damage_system: circle collision, damages entities.
+- health_system: (auto-run after collision).
+- render_system: draws shapes (circle, rect, triangle) on canvas.
+- time-based events: spawn entities on intervals.
+- rules: win_condition, fail_condition (all_enemies_defeated, player_health_zero, etc.)
 
-**ABSOLUTE RULES:**
-- NO code. NO scripts. NO functions. NO HTML.
-- ONLY JSON.
-- You select and parameterise existing engine systems.
-- The engine will run the game – you never create new logic.
-
-**THE FORMAT:**
+Game Spec JSON structure (MUST be exactly this format, no extra fields):
 {
   "world": {
-    "seed": number,
-    "width": number,
-    "height": number,
-    "resources": { "resource_name": initial_amount, ... },
-    "forces": [ { "type": "gravity", "x": 0, "y": 9.81 }, ... ],
-    "production": { "resource_name": rate_per_tick, ... },
-    "interactions": [
-      {
-        "trigger": "collision",
-        "entityA": "id",
-        "entityB": "id",
-        "distance": number,
-        "action": "damage",
-        "amount": number
-      },
-      ...
-    ]
+    "type": "canvas2d",
+    "width": 800,
+    "height": 600,
+    "background": "#000",
+    "gravity": { "x": 0, "y": 0.2 }
   },
   "entities": [
     {
-      "id": "unique_string",
-      "type": "player|enemy|resource|...",
-      "position": { "x": number, "y": number },
-      "rotation": 0,
-      "components": {
-        "health": 100,
-        "mass": 1,
-        "velocity": { "x": 0, "y": 0 },
-        "inventory": { "gold": 0 },
-        "energy": 100,
-        "ownership": "player",
-        "intelligence": { "template": "state_machine|utility|...", "params": {} },
-        "rendering": { "radius": 10, "color": "blue" }
-      }
+      "id": "player",
+      "type": "ship",
+      "position": { "x": 400, "y": 500 },
+      "components": [
+        { "type": "renderable", "params": { "shape": "triangle", "color": "#0f0", "size": 20 } },
+        { "type": "velocity", "params": { "maxSpeed": 5 } },
+        { "type": "health", "params": { "max": 100 } },
+        { "type": "player_controlled", "params": { "speed": 5 } },
+        { "type": "weapon", "params": { "cooldown": 10, "projectile": "bullet" } }
+      ]
+    },
+    {
+      "id": "enemy1",
+      "type": "enemy",
+      "position": { "x": 200, "y": 100 },
+      "components": [
+        { "type": "renderable", "params": { "shape": "circle", "color": "#f00", "size": 15 } },
+        { "type": "velocity", "params": { "maxSpeed": 2 } },
+        { "type": "health", "params": { "max": 30 } },
+        { "type": "ai_behavior", "params": { "behavior": "chase", "speed": 2 } }
+      ]
     }
   ],
-  "components": [ "list_of_component_names_used" ],
-  "systems": [ "physics", "constraints", "ai", "interactions", "economy", "events", "rules" ],
-  "constraints": [
-    {
-      "type": "orbit",
-      "center": "planet_id",
-      "orbiter": "moon_id",
-      "distance": 80,
-      "speed": 0.05
-    }
-  ],
-  "events": [
-    {
-      "trigger": "time|resource_threshold|state",
-      "time": 100,
-      "action": "spawn|modify_force|win",
-      "entityId": "optionally",
-      "x": 200,
-      "y": 200
-    }
+  "systems": [
+    "velocity_system",
+    "player_control_system",
+    "ai_system",
+    "collision_damage_system",
+    "health_system",
+    "render_system"
   ],
   "rules": {
-    "win_condition": "survive_ticks|collect_resources|...",
-    "win_value": number,
-    "fail_condition": "health_zero|time_out|...",
-    "fail_value": number
-  }
+    "win_condition": "all_enemies_defeated",
+    "fail_condition": "player_health_zero"
+  },
+  "events": [
+    {
+      "trigger": "time",
+      "params": { "interval": 3000 },
+      "action": "spawn_entity",
+      "entity_template": {
+        "type": "enemy",
+        "components": [
+          { "type": "renderable", "params": { "shape": "circle", "color": "#f00", "size": 15 } },
+          { "type": "velocity", "params": { "maxSpeed": 1.5 } },
+          { "type": "health", "params": { "max": 20 } },
+          { "type": "ai_behavior", "params": { "behavior": "wander", "speed": 1.5 } }
+        ]
+      }
+    }
+  ]
 }
 
-**HOW TO BUILD THE JSON:**
-- Translate the user's game idea into the above structure.
-- Use ONLY the predefined component types and system names.
-- If the user asks for “orbiting planets”, use *constraint:orbit* and set *intelligence* template to none.
-- If the user wants a survival game, use resources, economy, win_condition=survive_ticks.
-- State machines are defined by component parameters, not code.
-- The engine handles rendering, physics, collisions, and AI – you just provide the configuration.
+Rules:
+- Only output the JSON object, no extra text.
+- All entities must have position and components.
+- At least one entity must have "player_controlled".
+- Win and fail conditions are required.
+- Components like renderable, velocity, health, etc. are as shown.
+- Use the systems array to specify the order (must include at least those needed).
+- The world can have a background color and gravity.
+- Events are optional but encouraged.
 
-The user said: "${userMessage}"
-
-**Your entire response MUST start with '{' and end with '}'. No markdown, no explanation.**`;
+Now, based on the user's message, generate a game spec.`;
 }
-
-app.post("/generate-spec", async (req, res) => {
-  try {
-    const { messages } = req.body;
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: "messages array required" });
-    }
-    const userMessage =
-      messages.length > 0 ? messages[messages.length - 1].content : "";
-
-    const systemContent = buildGameSpecPrompt(userMessage);
-    const temperature = 0.2; // low for structured output
-
-    const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash",
-      messages: [{ role: "system", content: systemContent }, ...messages],
-      temperature,
-      max_tokens: 3000,
-      response_format: { type: "json_object" },
-    });
-
-    const text = completion.choices[0].message.content;
-    const parsed = extractJSON(text);
-
-    if (!parsed || !parsed.world) {
-      return res.status(422).json({ error: "Invalid Game Spec generated" });
-    }
-
-    res.json({ spec: parsed });
-  } catch (err) {
-    console.error("/generate-spec error:", err);
-    res.status(500).json({ error: "Server error: " + err.message });
-  }
-});
 
 // ============================
-//  POST /chat – Build / Edit (non‑streaming, unchanged)
+//  POST /chat – Build / Edit (non‑streaming fallback)
 // ============================
 app.post("/chat", async (req, res) => {
   try {
@@ -322,7 +423,7 @@ app.post("/chat", async (req, res) => {
 });
 
 // ============================
-//  POST /chat/stream – Streaming version with SSE (unchanged)
+//  POST /chat/stream – Streaming version with SSE
 // ============================
 app.post("/chat/stream", async (req, res) => {
   try {
@@ -358,6 +459,7 @@ app.post("/chat/stream", async (req, res) => {
     );
     const temperature = 0.0;
 
+    // SSE headers
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -415,6 +517,61 @@ app.post("/chat/stream", async (req, res) => {
 });
 
 // ============================
+//  POST /game/generate – New Game Spec endpoint
+// ============================
+app.post("/game/generate", async (req, res) => {
+  try {
+    const { messages } = req.body;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages array required" });
+    }
+
+    const systemContent = gameSpecSystemPrompt();
+
+    const completion = await client.chat.completions.create({
+      model: "deepseek/deepseek-v4-flash",
+      messages: [{ role: "system", content: systemContent }, ...messages],
+      temperature: 0.0,
+      max_tokens: 3000,
+      response_format: { type: "json_object" },
+    });
+
+    const text = completion.choices[0].message.content;
+    let spec;
+    try {
+      spec = JSON.parse(text);
+    } catch (e) {
+      return res.json({ error: "Invalid JSON from AI", fallback: true });
+    }
+
+    // Basic validation
+    if (!spec.world || !spec.entities || !spec.rules) {
+      return res.json({
+        error: "Missing required spec fields",
+        fallback: true,
+      });
+    }
+
+    const hasPlayer = spec.entities.some((e) =>
+      e.components?.some((c) => c.type === "player_controlled"),
+    );
+    if (!hasPlayer) {
+      return res.json({ error: "No playable entity found", fallback: true });
+    }
+
+    if (!spec.rules.win_condition || !spec.rules.fail_condition) {
+      return res.json({ error: "Missing win/fail conditions", fallback: true });
+    }
+
+    // Success
+    res.json({ spec, description: "Game specification generated." });
+  } catch (err) {
+    console.error("/game/generate error:", err);
+    res.status(500).json({ error: err.message, fallback: true });
+  }
+});
+
+// ============================
 //  POST /ask – Page assistant (unchanged)
 // ============================
 app.post("/ask", async (req, res) => {
@@ -443,7 +600,7 @@ app.post("/ask", async (req, res) => {
 
 // --------------- Health check ---------------
 app.get("/", (req, res) =>
-  res.send("AI Backend v16 (game compiler + classic builder) is running."),
+  res.send("AI Backend v16 (game spec engine + fallback) is running."),
 );
 
 // --------------- Start server ---------------
