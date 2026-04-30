@@ -199,26 +199,26 @@ Your entire message must start with { and end with }. No markdown or explanation
 
   const editEnding = `**How your code is executed:**
 \`\`\`
-new Function("sandbox", yourCode)(sandboxElement)
+The system will provide two variables:
+- sandbox (the container DIV)
+- doc (the document inside the iframe, already computed for you)
+
+Your code will be run like: new Function("sandbox", "doc", yourCode)(sandbox, doc);
 \`\`\`
-The parameter sandbox is the container DIV. To access the iframe content:
-\`\`\`
-const iframe = sandbox.querySelector('iframe#sandbox-iframe');
-const doc = iframe ? iframe.contentDocument : sandbox.ownerDocument;
-\`\`\`
-You MUST use \`doc\` for ALL DOM manipulations (querySelector, getElementById, etc.). NEVER use \`document\` directly – it will point to the wrong page and break everything.
+
+You DO NOT need to declare or compute \`doc\`. It is already available as a parameter.
+Just use \`doc\` directly for any DOM manipulation (doc.querySelector, doc.getElementById, etc.).
 
 Current sandbox content:
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
 
-**PRECISE EDIT MODE:** You MUST only modify the specific part(s) requested by the user. Read the user's request carefully. Do NOT rewrite the whole page. Return a JSON object with the modified JavaScript code (only the script that needs to be changed) and a brief summary of the change.
+**PRECISE EDIT MODE:** Modify ONLY the specific part(s) requested by the user. Do NOT rewrite the whole page. Return a JSON object with the modified JavaScript code (only the script that needs to be changed) and a brief summary of the change.
 
 Output format: { "code": "your JavaScript code", "description": "brief summary of change" }
 
 Your entire message must start with { and end with }. No markdown or explanation.`;
-
   if (mode === "generate") {
     return `You are an expert front‑end developer. Write a complete, self‑contained HTML page STRICTLY for mobile portrait.
 ${mandatoryRules}
@@ -283,7 +283,7 @@ async function retryGenerate(
             " Remember: you MUST use the provided 'doc' variable for all DOM access, not 'document'. Use doc.querySelector, doc.getElementById, etc.";
         } else {
           correction +=
-            " Fix ALL of them and return a complete, playable page. Make sure all buttons work via touch events, game loop exists, score, and restart.";
+            " Please fix ALL of them and return a complete, playable page. Make sure all buttons work via touch events, game loop exists, score, and restart.";
         }
         currentMessages.push({ role: "user", content: correction });
       } else {
@@ -299,7 +299,7 @@ async function retryGenerate(
         currentMessages.push({
           role: "user",
           content:
-            "Your output did not contain valid JSON with 'code' and 'description' fields. Return ONLY the JSON object as specified.",
+            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
         });
       } else {
         // Last attempt – fallback extraction only as last resort
@@ -424,7 +424,7 @@ app.post("/chat/stream", async (req, res) => {
             " Remember to use 'doc' for all DOM operations, not 'document'.";
         } else {
           correction +=
-            " Fix ALL of them and return a complete, playable page.";
+            " Please fix ALL of them and return a complete, playable page.";
         }
         const retryMessages = [
           ...messages,
@@ -452,7 +452,7 @@ app.post("/chat/stream", async (req, res) => {
         {
           role: "user",
           content:
-            "Your output did not contain valid JSON with 'code' and 'description' fields. Return ONLY the JSON object as specified.",
+            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
         },
       ];
       const result = await retryGenerate(
