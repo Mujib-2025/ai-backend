@@ -1,10 +1,11 @@
-// server.js – Mobile‑only AI backend (strict touch‑only, no keyboard, 2 tries: Flash → Pro)
+// server.js – Mobile‑only AI backend (Pro model only, 2 attempts max, touch‑only enforcement)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
 
 const app = express();
 
+// --------------- CORS ---------------
 app.use(
   cors({
     origin: "*",
@@ -15,6 +16,7 @@ app.use(
 
 app.use(express.json({ limit: "5mb" }));
 
+// --------------- OpenAI client ---------------
 const client = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",
   apiKey: process.env.DEEPSEEK_API_KEY || "missing-api-key",
@@ -53,7 +55,7 @@ function extractJSON(text) {
   }
 }
 
-// --------------- Validate generated code ---------------
+// --------------- Validate generated code (stricter touch‑only enforcement) ---------------
 function validateGeneratedCode(code, userMessage, mode) {
   const errors = [];
 
@@ -107,12 +109,14 @@ function validateGeneratedCode(code, userMessage, mode) {
           "No touch/click event handlers – buttons won't work on mobile",
         );
 
+      // Restart button visible in HTML
       const restartBtnRegex =
         /<button[^>]*>[\s\S]*?(?:restart|reset)[\s\S]*?<\/button>/i;
       if (!restartBtnRegex.test(code)) {
         errors.push("No visible restart/reset button found in HTML");
       }
 
+      // Restart function that resets game state
       const restartLogicIndicators =
         /\bscore\s*=\s*0\b|\bresetGame\b|\bclearInterval\b|\bcancelAnimationFrame\b|\bctx\.clearRect\b|\bgameOver\s*=\s*false\b/i;
       if (
@@ -122,6 +126,7 @@ function validateGeneratedCode(code, userMessage, mode) {
         errors.push("No restart/reset function that resets game state");
       }
 
+      // Event listeners must reference defined functions
       const eventListenerRegex =
         /addEventListener\s*\(\s*['"](?:click|touchstart|touchend)['"]\s*,\s*(\w+)/g;
       let match;
@@ -158,7 +163,7 @@ function validateGeneratedCode(code, userMessage, mode) {
   return errors;
 }
 
-// --------------- System Prompt ---------------
+// --------------- System Prompt (Stronger touch‑only focus) ---------------
 function buildSystemPrompt(mode, sandboxHTML, userMessage) {
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -188,7 +193,7 @@ function buildSystemPrompt(mode, sandboxHTML, userMessage) {
 
 8. **ABSOLUTELY NO KEYBOARD CONTROLS:** This is a mobile‑only game. Do NOT use keydown, keyup, keypress, or any keyboard events. Only touch and mouse click events are allowed.
 
-9. **MOBILE TOUCH CONTROLS ONLY:** All player interaction must be via touch (touchstart, touchend) or click. Use event listeners for these.
+9. **MOBILE TOUCH CONTROLS ONLY:** All player interaction must be via touch (touchstart, touchend) or click. Use event listeners for these. Do not mention keyboard controls anywhere in the code.
 
 10. **FULL GAME REQUIREMENT (TOP PRIORITY):**
 If this is a game, you MUST include:
@@ -213,20 +218,27 @@ The main mechanic MUST be implemented and visible. It must update over time and 
 `;
 
   const layout = `Mobile layout: Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units.`;
+
   const gameExtra = isGame
     ? `This is a COMPLETE MOBILE GAME WITH TOUCH CONTROLS ONLY. No keyboard. Must be fully playable, with score, win/lose, restart.`
     : `This is a mobile website. Include header, main content, footer.`;
+
   const qualityText = `ULTRA QUALITY: Write complete, production‑ready code. Every feature fully implemented.`;
+
   const mobileSizing = isGame
     ? `Mobile game sizing: Use relative units, design for 9:16.`
     : "";
+
   const threeD = is3D
     ? `3D game (Three.js): Use ES modules, import from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js'. Mobile touch only. No keyboard.`
     : "";
+
   const imageRules = `Images: Always use absolute HTTPS URLs (https://picsum.photos/400/300 or https://source.unsplash.com/featured/?{topic}). Never local paths.`;
 
   const generateEnding = `**Output format:** ONLY a JSON object: { "code": "<full HTML>", "description": "one-sentence summary" }
+
 CRITICAL: The game must be error-free, touch‑only, with working buttons, score update, win/lose, and a visible restart button. No keyboard events.
+
 Your entire message must start with { and end with }. No markdown or explanation.`;
 
   const editEnding = `**How your code is executed:**
@@ -242,6 +254,7 @@ ${sandboxHTML || "(empty)"}
 \`\`\`
 
 PRECISE EDIT MODE: Modify ONLY the specific part(s) requested. Return a JSON object with the modified JavaScript code and a brief summary.
+
 Output format: { "code": "your JavaScript code", "description": "brief summary" }
 Your entire message must start with { and end with }.`;
 
@@ -261,108 +274,121 @@ ${editEnding}`;
   }
 }
 
-// --------------- Retry‑enabled generation (exactly 2 attempts) ---------------
-async function retryGenerate(
+// --------------- Generate with Pro model, max 2 attempts ---------------
+async function generateWithRetry(
   messages,
   mode,
   sandboxHTML,
   userMessage,
-  attemptModel = "deepseek/deepseek-v4-flash", // first attempt
+  maxRetries = 1,
 ) {
-  // Attempt 1 (flash)
   let currentMessages = [...messages];
-  let result = await makeAttempt(
-    attemptModel,
-    currentMessages,
-    mode,
-    sandboxHTML,
-    userMessage,
-  );
+  const model = "deepseek/deepseek-v4-pro";
 
-  if (result.code !== null && result.errors.length === 0) {
-    result.model = attemptModel;
-    result.attempts = 1;
-    return result;
-  }
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    console.log(`Attempt ${attempt + 1}/${maxRetries + 1} using ${model}`);
 
-  // Attempt 2 (pro)
-  console.log(`Flash failed, retrying with Pro...`);
-  if (result.errors.length > 0) {
-    currentMessages.push({
-      role: "user",
-      content: `Your previous output was invalid. Issues: ${result.errors.join("; ")}. Fix them.`,
+    const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
+    const completion = await client.chat.completions.create({
+      model,
+      messages: [
+        { role: "system", content: systemContent },
+        ...currentMessages,
+      ],
+      temperature: 0.0,
+      max_tokens: mode === "generate" ? 10000 : 4000,
+      response_format: { type: "json_object" },
     });
-  } else {
-    currentMessages.push({
-      role: "user",
-      content:
-        "Your output did not contain valid JSON. Please return ONLY the JSON object as specified.",
-    });
-  }
 
-  result = await makeAttempt(
-    "deepseek/deepseek-v4-pro",
-    currentMessages,
-    mode,
-    sandboxHTML,
-    userMessage,
-  );
-  result.model = "deepseek/deepseek-v4-pro";
-  result.attempts = 2;
-  return result;
-}
+    const text = completion.choices[0].message.content;
+    const parsed = extractJSON(text);
 
-async function makeAttempt(model, messages, mode, sandboxHTML, userMessage) {
-  const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
-  const completion = await client.chat.completions.create({
-    model,
-    messages: [{ role: "system", content: systemContent }, ...messages],
-    temperature: 0.0,
-    max_tokens: mode === "generate" ? 10000 : 4000,
-    response_format: { type: "json_object" },
-  });
+    if (
+      parsed &&
+      typeof parsed.code === "string" &&
+      typeof parsed.description === "string"
+    ) {
+      const errors = validateGeneratedCode(parsed.code, userMessage, mode);
+      if (errors.length === 0) {
+        return {
+          code: parsed.code,
+          description: parsed.description,
+          model,
+          attempts: attempt + 1,
+          success: true,
+        };
+      }
 
-  const text = completion.choices[0].message.content;
-  const parsed = extractJSON(text);
-
-  if (
-    parsed &&
-    typeof parsed.code === "string" &&
-    typeof parsed.description === "string"
-  ) {
-    const errors = validateGeneratedCode(parsed.code, userMessage, mode);
-    return { code: parsed.code, description: parsed.description, errors };
-  }
-
-  // JSON extraction failed
-  const codeMatch =
-    text.match(/```html\s*([\s\S]*?)\s*```/) ||
-    text.match(/<!DOCTYPE html[\s\S]*/i);
-  const jsMatch =
-    text.match(/```javascript\s*([\s\S]*?)\s*```/) ||
-    text.match(/```\s*([\s\S]*?)```/);
-  const fallbackCode =
-    mode === "edit"
-      ? jsMatch
-        ? jsMatch[1]
-        : null
-      : codeMatch
-        ? codeMatch[0]
-        : null;
-
-  if (fallbackCode) {
-    return {
-      code: fallbackCode.trim(),
-      description:
-        "Extracted code from non‑JSON output (quality not guaranteed).",
-      errors: ["JSON parse failed"],
-    };
+      console.log(
+        `Attempt ${attempt + 1} failed validation:`,
+        errors.join(", "),
+      );
+      if (attempt < maxRetries) {
+        let correction = `Your previous output was invalid. Issues: ${errors.join("; ")}.`;
+        if (mode === "edit") {
+          correction += " Remember: use 'doc' instead of 'document'.";
+        } else {
+          correction +=
+            " Fix ALL of them. Use ONLY touch and click events, no keyboard. Ensure restart button exists and resets the game.";
+        }
+        currentMessages.push({ role: "user", content: correction });
+      } else {
+        // Max retries reached – return last code with warning
+        return {
+          code: parsed.code,
+          description: `⚠️ ${mode === "edit" ? "Edit" : "Game"} may be incomplete after ${attempt + 1} attempts. Issues: ${errors.join("; ")}`,
+          model,
+          attempts: attempt + 1,
+        };
+      }
+    } else {
+      console.log(`Attempt ${attempt + 1} failed JSON parsing`);
+      if (attempt < maxRetries) {
+        currentMessages.push({
+          role: "user",
+          content:
+            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
+        });
+      } else {
+        // Last resort fallback extraction
+        const codeMatch =
+          text.match(/```html\s*([\s\S]*?)\s*```/) ||
+          text.match(/<!DOCTYPE html[\s\S]*/i);
+        const jsMatch =
+          text.match(/```javascript\s*([\s\S]*?)\s*```/) ||
+          text.match(/```\s*([\s\S]*?)```/);
+        const fallbackCode =
+          mode === "edit"
+            ? jsMatch
+              ? jsMatch[1]
+              : null
+            : codeMatch
+              ? codeMatch[0]
+              : null;
+        if (fallbackCode) {
+          return {
+            code: fallbackCode.trim(),
+            description:
+              "Extracted code from non‑JSON output (quality not guaranteed).",
+            model,
+            attempts: attempt + 1,
+          };
+        }
+        return {
+          code: null,
+          description: `Failed to produce valid JSON after ${attempt + 1} attempts.`,
+          model,
+          attempts: attempt + 1,
+        };
+      }
+    }
   }
 
   return {
     code: null,
-    description: "Failed to produce valid JSON.",
-    errors: ["JSON parse failed"],
+    description: "Generation failed.",
+    model,
+    attempts: maxRetries + 1,
   };
 }
 
@@ -377,14 +403,14 @@ app.post("/chat", async (req, res) => {
     }
 
     const userMessage = messages[messages.length - 1]?.content || "";
-    const result = await retryGenerate(
+    const result = await generateWithRetry(
       messages,
       mode,
       sandboxHTML,
       userMessage,
+      1,
     );
 
-    // Append model/attempt info
     const info = ` | ✅ Model: ${result.model}, Attempts: ${result.attempts}`;
     const finalDescription = (result.description || "") + info;
 
@@ -398,7 +424,7 @@ app.post("/chat", async (req, res) => {
 });
 
 // ============================
-//  POST /chat/stream – Streaming with Pro fallback
+//  POST /chat/stream – Streaming (Pro only)
 // ============================
 app.post("/chat/stream", async (req, res) => {
   try {
@@ -409,29 +435,26 @@ app.post("/chat/stream", async (req, res) => {
 
     const userMessage = messages[messages.length - 1]?.content || "";
     const maxTokens = mode === "generate" ? 10000 : 4000;
+    const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
+    const model = "deepseek/deepseek-v4-pro";
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    // First attempt: streaming with flash
-    console.log("Streaming attempt 1 with deepseek/deepseek-v4-flash");
-    const systemContentFlash = buildSystemPrompt(
-      mode,
-      sandboxHTML,
-      userMessage,
-    );
-    const streamFlash = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash",
-      messages: [{ role: "system", content: systemContentFlash }, ...messages],
+    // First attempt: streaming with Pro
+    console.log(`Streaming attempt 1 using ${model}`);
+    const stream = await client.chat.completions.create({
+      model,
+      messages: [{ role: "system", content: systemContent }, ...messages],
       temperature: 0.0,
       max_tokens: maxTokens,
       stream: true,
     });
 
     let fullContent = "";
-    for await (const chunk of streamFlash) {
+    for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || "";
       if (delta) {
         fullContent += delta;
@@ -442,8 +465,7 @@ app.post("/chat/stream", async (req, res) => {
     let parsed = extractJSON(fullContent);
     let code = null;
     let description = "";
-    let modelUsed = "deepseek/deepseek-v4-flash";
-    let attempts = 1;
+    let attemptsUsed = 1;
 
     if (
       parsed &&
@@ -455,57 +477,61 @@ app.post("/chat/stream", async (req, res) => {
         code = parsed.code;
         description = parsed.description;
       } else {
-        console.log("Streaming flash failed validation, retrying with Pro...");
+        console.log("Streaming result failed validation, retrying...");
         res.write(
-          `data: ${JSON.stringify({ delta: "⚠️ Fixing issues with Pro..." })}\n\n`,
+          `data: ${JSON.stringify({ delta: "⚠️ Fixing issues..." })}\n\n`,
         );
 
+        let correction = `Your previous output was invalid. Issues: ${errors.join("; ")}.`;
+        if (mode === "edit") {
+          correction += " Remember to use 'doc' for all DOM operations.";
+        } else {
+          correction +=
+            " Fix all issues. Use touch controls only, no keyboard.";
+        }
         const retryMessages = [
           ...messages,
-          {
-            role: "user",
-            content: `Previous output invalid: ${errors.join("; ")}. Fix it.`,
-          },
+          { role: "user", content: correction },
         ];
-        const result = await retryGenerate(
+
+        const result = await generateWithRetry(
           retryMessages,
           mode,
           sandboxHTML,
           userMessage,
-          "deepseek/deepseek-v4-pro",
-        );
-        code = result.code;
+          0,
+        ); // allow only 1 more attempt (since we already used one)
+        code = result.code || parsed.code;
         description = result.description;
-        modelUsed = result.model || "deepseek/deepseek-v4-pro";
-        attempts = 1 + (result.attempts || 1);
+        attemptsUsed = 1 + (result.attempts || 1);
       }
     } else {
-      console.log("Streaming flash JSON parse failed, retrying with Pro...");
+      console.log("Streaming JSON parse failed, retrying...");
       res.write(
-        `data: ${JSON.stringify({ delta: "⚠️ Fixing output format with Pro..." })}\n\n`,
+        `data: ${JSON.stringify({ delta: "⚠️ Fixing output format..." })}\n\n`,
       );
 
       const retryMessages = [
         ...messages,
         {
           role: "user",
-          content: "Output not valid JSON. Return ONLY JSON as specified.",
+          content:
+            "Your output did not contain valid JSON. Please return ONLY the JSON object as specified.",
         },
       ];
-      const result = await retryGenerate(
+      const result = await generateWithRetry(
         retryMessages,
         mode,
         sandboxHTML,
         userMessage,
-        "deepseek/deepseek-v4-pro",
+        0,
       );
       code = result.code;
       description = result.description;
-      modelUsed = result.model || "deepseek/deepseek-v4-pro";
-      attempts = 1 + (result.attempts || 1);
+      attemptsUsed = 1 + (result.attempts || 1);
     }
 
-    const info = ` | ✅ Model: ${modelUsed}, Attempts: ${attempts}`;
+    const info = ` | ✅ Model: ${model}, Attempts: ${attemptsUsed}`;
     const finalDescription = (description || "") + info;
 
     res.write(
@@ -524,7 +550,7 @@ app.post("/chat/stream", async (req, res) => {
 });
 
 // ============================
-//  POST /ask – Page assistant
+//  POST /ask – Page assistant (unchanged)
 // ============================
 app.post("/ask", async (req, res) => {
   try {
@@ -537,7 +563,7 @@ app.post("/ask", async (req, res) => {
     };
 
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash",
+      model: "deepseek/deepseek-v4-pro",
       messages: [systemMessage, { role: "user", content: question }],
       temperature: 0.7,
       max_tokens: 800,
@@ -550,8 +576,9 @@ app.post("/ask", async (req, res) => {
   }
 });
 
+// Health check
 app.get("/", (req, res) =>
-  res.send("AI Backend v25 (Flash → Pro, 2 attempts max) is running."),
+  res.send("AI Backend v25 (Pro only, 2 attempts max) is running."),
 );
 
 const PORT = process.env.PORT || 3000;
