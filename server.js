@@ -1,4 +1,4 @@
-// server.js – Mobile‑only AI backend (Ultra mode, strict enforcement, retry, precise edits)
+// server.js – Mobile‑only AI backend (strict game enforcement, precise edit with doc validation)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -56,7 +56,7 @@ function extractJSON(text) {
   }
 }
 
-// --------------- Validate generated code (strict for games) ---------------
+// --------------- Validate generated code (mode‑aware) ---------------
 function validateGeneratedCode(code, userMessage, mode) {
   const errors = [];
 
@@ -65,52 +65,63 @@ function validateGeneratedCode(code, userMessage, mode) {
     return errors;
   }
 
-  const lower = code.toLowerCase();
-  const lowerMsg = (userMessage || "").toLowerCase();
-  const isGame =
-    mode === "generate" &&
-    (lowerMsg.includes("game") ||
+  if (mode === "generate") {
+    const lower = code.toLowerCase();
+    const lowerMsg = (userMessage || "").toLowerCase();
+    const isGame =
+      lowerMsg.includes("game") ||
       lowerMsg.includes("play") ||
       lowerMsg.includes("tic") ||
       lowerMsg.includes("snake") ||
-      lowerMsg.includes("puzzle"));
+      lowerMsg.includes("puzzle");
 
-  // Basic HTML structure
-  if (!lower.includes("<!doctype")) errors.push("Missing DOCTYPE");
-  if (!lower.includes("<script")) errors.push("Missing <script> tag");
+    if (!lower.includes("<!doctype")) errors.push("Missing DOCTYPE");
+    if (!lower.includes("<script")) errors.push("Missing <script> tag");
 
-  // Game-specific checks (strict)
-  if (isGame) {
-    if (!lower.includes("addeventlistener"))
+    if (isGame) {
+      if (!lower.includes("addeventlistener"))
+        errors.push(
+          "No addEventListener – interactive elements will not work on mobile",
+        );
+      if (
+        !lower.includes("requestanimationframe") &&
+        !lower.includes("setinterval")
+      )
+        errors.push("No game loop (requestAnimationFrame or setInterval)");
+      if (!lower.includes("restart") && !lower.includes("reset"))
+        errors.push("No restart/reset functionality");
+      if (!lower.includes("score")) errors.push("No score variable or display");
+      const functionMatches = code.match(/function\s+\w+/g);
+      if (!functionMatches || functionMatches.length < 2)
+        errors.push("Fewer than 2 functions – game logic may be incomplete");
+      if (
+        !lower.includes("touchstart") &&
+        !lower.includes("touchend") &&
+        !lower.includes("click")
+      )
+        errors.push(
+          "No touch/click event handlers – buttons won't work on mobile",
+        );
+    }
+  } else {
+    // Edit mode: check for incorrect usage of document instead of doc
+    if (/\bdocument\./.test(code)) {
       errors.push(
-        "No addEventListener – interactive elements will not work on mobile",
+        "Uses 'document' instead of the provided 'doc' variable. All DOM access must go through 'doc'.",
       );
-    if (
-      !lower.includes("requestanimationframe") &&
-      !lower.includes("setinterval")
-    )
-      errors.push("No game loop (requestAnimationFrame or setInterval)");
-    if (!lower.includes("restart") && !lower.includes("reset"))
-      errors.push("No restart/reset functionality");
-    if (!lower.includes("score")) errors.push("No score variable or display");
-    const functionMatches = code.match(/function\s+\w+/g);
-    if (!functionMatches || functionMatches.length < 2)
-      errors.push("Fewer than 2 functions – game logic may be incomplete");
-    // Touch events must be present
-    if (
-      !lower.includes("touchstart") &&
-      !lower.includes("touchend") &&
-      !lower.includes("click")
-    )
+    }
+    // Basic sanity: code must not be HTML (should be pure JS)
+    if (code.includes("<!DOCTYPE") || code.includes("<html")) {
       errors.push(
-        "No touch/click event handlers – buttons won't work on mobile",
+        "Edit code appears to be full HTML – only JavaScript is expected.",
       );
+    }
   }
 
   return errors;
 }
 
-// --------------- System Prompt (Ultra mode, mobile, strict game enforcement) ---------------
+// --------------- System Prompt (Ultra mode, mobile, game enforcement) ---------------
 function buildSystemPrompt(mode, sandboxHTML, userMessage) {
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -159,7 +170,7 @@ The main mechanic MUST be implemented and visible. It must update over time and 
 
 13. **STRICT MOBILE VERTICAL RECTANGLE:** Portrait, flex column, no horizontal scroll. Use touch-action: manipulation; user-select: none; on interactive elements. Buttons ≥ 44px tap target. No keyboard controls.
 
-14. **TOUCH EVENTS:** All interactive elements MUST respond to touch (touchstart/click). Use both if needed for mobile.
+14.**TOUCH EVENTS:** All interactive elements MUST respond to touch (touchstart/click). Use both if needed for mobile.
 `;
 
   const layout = `Mobile layout: Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units.`;
@@ -195,7 +206,7 @@ The parameter sandbox is the container DIV. To access the iframe content:
 const iframe = sandbox.querySelector('iframe#sandbox-iframe');
 const doc = iframe ? iframe.contentDocument : sandbox.ownerDocument;
 \`\`\`
-Use doc for all DOM changes.
+You MUST use \`doc\` for ALL DOM manipulations (querySelector, getElementById, etc.). NEVER use \`document\` directly – it will point to the wrong page and break everything.
 
 Current sandbox content:
 \`\`\`html
@@ -219,7 +230,7 @@ ${threeD}
 ${imageRules}
 ${generateEnding}`;
   } else {
-    return `You are an expert front‑end developer. Modify the existing sandbox page PRECISELY as requested.
+    return `You are an expert front‑end developer. Modify the existing sandbox page PRECISELY as requested, using the provided \`doc\` variable for all DOM access.
 ${editEnding}`;
   }
 }
@@ -265,16 +276,21 @@ async function retryGenerate(
         errors.join(", "),
       );
       if (attempt < maxRetries) {
-        // Add correction request
-        currentMessages.push({
-          role: "user",
-          content: `Your previous output was invalid. The following issues were found: ${errors.join("; ")}. Please fix ALL of them and return a complete, playable page. Make sure all buttons work via touch events, game loop exists, score, and restart.`,
-        });
+        // Build a correction message specific to the mode
+        let correction = `Your previous output was invalid. The following issues were found: ${errors.join("; ")}.`;
+        if (mode === "edit") {
+          correction +=
+            " Remember: you MUST use the provided 'doc' variable for all DOM access, not 'document'. Use doc.querySelector, doc.getElementById, etc.";
+        } else {
+          correction +=
+            " Fix ALL of them and return a complete, playable page. Make sure all buttons work via touch events, game loop exists, score, and restart.";
+        }
+        currentMessages.push({ role: "user", content: correction });
       } else {
         // Max retries – still return code with warning
         return {
           code: parsed.code,
-          description: `⚠️ Game may be incomplete after ${maxRetries + 1} attempts. Issues: ${errors.join("; ")}`,
+          description: `⚠️ ${mode === "edit" ? "Edit" : "Game"} may be incomplete after ${maxRetries + 1} attempts. Issues: ${errors.join("; ")}`,
         };
       }
     } else {
@@ -283,18 +299,29 @@ async function retryGenerate(
         currentMessages.push({
           role: "user",
           content:
-            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
+            "Your output did not contain valid JSON with 'code' and 'description' fields. Return ONLY the JSON object as specified.",
         });
       } else {
-        // Last attempt – try fallback extraction only as last resort
+        // Last attempt – fallback extraction only as last resort
         const codeMatch =
           text.match(/```html\s*([\s\S]*?)\s*```/) ||
           text.match(/<!DOCTYPE html[\s\S]*/i);
-        if (codeMatch) {
+        const jsMatch =
+          text.match(/```javascript\s*([\s\S]*?)\s*```/) ||
+          text.match(/```\s*([\s\S]*?)```/);
+        const fallbackCode =
+          mode === "edit"
+            ? jsMatch
+              ? jsMatch[1]
+              : null
+            : codeMatch
+              ? codeMatch[0]
+              : null;
+        if (fallbackCode) {
           return {
-            code: codeMatch[0].trim(),
+            code: fallbackCode.trim(),
             description:
-              "Extracted HTML from non‑JSON output (quality not guaranteed).",
+              "Extracted code from non‑JSON output (quality not guaranteed).",
           };
         }
         return {
@@ -309,7 +336,7 @@ async function retryGenerate(
 }
 
 // ============================
-//  POST /chat – Non‑streaming (used for retries internally)
+//  POST /chat – Non‑streaming
 // ============================
 app.post("/chat", async (req, res) => {
   try {
@@ -386,18 +413,22 @@ app.post("/chat/stream", async (req, res) => {
         code = parsed.code;
         description = parsed.description;
       } else {
-        // Streaming failed validation – fallback to retry (non‑streaming)
         console.log("Streaming result failed validation, retrying...");
         res.write(
           `data: ${JSON.stringify({ delta: "⚠️ Fixing issues..." })}\n\n`,
         );
 
+        let correction = `Your previous output was invalid. The following issues were found: ${errors.join("; ")}.`;
+        if (mode === "edit") {
+          correction +=
+            " Remember to use 'doc' for all DOM operations, not 'document'.";
+        } else {
+          correction +=
+            " Fix ALL of them and return a complete, playable page.";
+        }
         const retryMessages = [
           ...messages,
-          {
-            role: "user",
-            content: `Your previous output was invalid. The following issues were found: ${errors.join("; ")}. Please fix ALL of them and return a complete, playable page.`,
-          },
+          { role: "user", content: correction },
         ];
 
         const result = await retryGenerate(
@@ -406,12 +437,11 @@ app.post("/chat/stream", async (req, res) => {
           sandboxHTML,
           userMessage,
           1,
-        ); // 1 extra retry
+        );
         code = result.code || parsed.code;
         description = result.description;
       }
     } else {
-      // JSON parsing failed – fallback to retry
       console.log("Streaming result failed JSON, retrying...");
       res.write(
         `data: ${JSON.stringify({ delta: "⚠️ Fixing output format..." })}\n\n`,
@@ -422,10 +452,9 @@ app.post("/chat/stream", async (req, res) => {
         {
           role: "user",
           content:
-            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
+            "Your output did not contain valid JSON with 'code' and 'description' fields. Return ONLY the JSON object as specified.",
         },
       ];
-
       const result = await retryGenerate(
         retryMessages,
         mode,
@@ -479,9 +508,7 @@ app.post("/ask", async (req, res) => {
 
 // Health check
 app.get("/", (req, res) =>
-  res.send(
-    "AI Backend v20 (strict enforcement, retry, precise edits) is running.",
-  ),
+  res.send("AI Backend v21 (edit mode fixes, doc enforcement) is running."),
 );
 
 const PORT = process.env.PORT || 3000;
