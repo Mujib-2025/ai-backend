@@ -1,4 +1,4 @@
-// server.js – Mobile‑only AI backend (strict game enforcement, precise edit with doc validation)
+// server.js – Mobile‑only AI backend (strict game enforcement, precise edit with doc validation, phone‑card layout)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -121,7 +121,7 @@ function validateGeneratedCode(code, userMessage, mode) {
   return errors;
 }
 
-// --------------- System Prompt (Ultra mode, mobile, game enforcement) ---------------
+// --------------- System Prompt (Ultra mode, mobile, game enforcement, phone‑card layout) ---------------
 function buildSystemPrompt(mode, sandboxHTML, userMessage) {
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -168,32 +168,40 @@ The main mechanic MUST be implemented and visible. It must update over time and 
 
 12. If using external libraries (like Three.js), use ES modules and <script type="module">.
 
-13. **STRICT MOBILE VERTICAL RECTANGLE:** Portrait, flex column, no horizontal scroll. Use touch-action: manipulation; user-select: none; on interactive elements. Buttons ≥ 44px tap target. No keyboard controls.
+13. **PHONE‑CARD LAYOUT (CRITICAL):**
+The ENTIRE game/page must be displayed inside a vertical rectangle card centered on the page. This card represents a phone screen.
+- Create a container div with the following styles:
+  \`width: 100%; max-width: 420px; height: auto; aspect-ratio: 9 / 16; max-height: 95vh; margin: auto; border-radius: 24px; overflow: hidden; background: #fff; box-shadow: 0 0 30px rgba(0,0,0,0.5);\`
+- The body background must be dark (#0a0a0a or similar).
+- Position the card exactly in the center of the viewport using flexbox on the body: \`display: flex; justify-content: center; align-items: center; min-height: 100vh;\`.
+- ALL content (game canvas, UI, buttons) must go INSIDE this card. Nothing outside except the dark background.
+- The card must not cause any scrollbars; it must fit within the viewport.
+- On very small screens, use \`@media (max-height: 700px) { … }\` to reduce the card's max-height to 80vh.
 
-14.**TOUCH EVENTS:** All interactive elements MUST respond to touch (touchstart/click). Use both if needed for mobile.
+14. **TOUCH EVENTS:** All interactive elements MUST respond to touch (touchstart/click). Use both if needed for mobile.
 `;
 
-  const layout = `Mobile layout: Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units.`;
+  const layout = `Mobile layout: Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units. The game is displayed inside a centered phone card as described above.`;
 
   const gameExtra = isGame
     ? `This is a COMPLETE MOBILE GAME. Only touch controls. Must be fully playable, with score, win/lose, restart.`
-    : `This is a mobile website. Include header, main content, footer.`;
+    : `This is a mobile website displayed inside a centered phone card. Include header, main content, footer.`;
 
   const qualityText = `ULTRA QUALITY: Write complete, production‑ready code. Every feature requested must be fully implemented. No simplifications.`;
 
   const mobileSizing = isGame
-    ? `Mobile game sizing: Use relative units, design for 9:16.`
+    ? `Mobile game sizing: Use relative units, design for 9:16 ratio within the card.`
     : "";
 
   const threeD = is3D
-    ? `3D game (Three.js): Use ES modules (<script type="module">). Import like: import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js'. Mobile touch only.`
+    ? `3D game (Three.js): Use ES modules (<script type="module">). Import like: import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js'. Mobile touch only. The Three.js canvas must be placed inside the phone card.`
     : "";
 
   const imageRules = `Images: Always use absolute HTTPS URLs (https://picsum.photos/400/300 or https://source.unsplash.com/featured/?{topic}). Never local paths.`;
 
   const generateEnding = `**Output format:** ONLY a JSON object: { "code": "<full HTML>", "description": "one-sentence summary" }
 
-CRITICAL VALIDATION BEFORE OUTPUT: The game must be error-free, have working buttons, score update, win/lose, and restart. Design for mobile portrait.
+CRITICAL VALIDATION BEFORE OUTPUT: The game must be error-free, have working buttons, score update, win/lose, and restart. The page must be displayed inside a centered phone card as specified.
 
 Your entire message must start with { and end with }. No markdown or explanation.`;
 
@@ -220,7 +228,7 @@ Output format: { "code": "your JavaScript code", "description": "brief summary o
 
 Your entire message must start with { and end with }. No markdown or explanation.`;
   if (mode === "generate") {
-    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page STRICTLY for mobile portrait.
+    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page STRICTLY for mobile portrait, displayed inside a centered phone card.
 ${mandatoryRules}
 ${layout}
 ${gameExtra}
@@ -283,7 +291,7 @@ async function retryGenerate(
             " Remember: you MUST use the provided 'doc' variable for all DOM access, not 'document'. Use doc.querySelector, doc.getElementById, etc.";
         } else {
           correction +=
-            " Please fix ALL of them and return a complete, playable page. Make sure all buttons work via touch events, game loop exists, score, and restart.";
+            " Please fix ALL of them and return a complete, playable page inside the phone card. Make sure all buttons work via touch events, game loop exists, score, and restart.";
         }
         currentMessages.push({ role: "user", content: correction });
       } else {
@@ -424,7 +432,7 @@ app.post("/chat/stream", async (req, res) => {
             " Remember to use 'doc' for all DOM operations, not 'document'.";
         } else {
           correction +=
-            " Please fix ALL of them and return a complete, playable page.";
+            " Please fix ALL of them and return a complete, playable page inside the phone card.";
         }
         const retryMessages = [
           ...messages,
@@ -508,7 +516,9 @@ app.post("/ask", async (req, res) => {
 
 // Health check
 app.get("/", (req, res) =>
-  res.send("AI Backend v21 (edit mode fixes, doc enforcement) is running."),
+  res.send(
+    "AI Backend v22 (phone‑card layout enforced, edit mode fixes, doc enforcement) is running.",
+  ),
 );
 
 const PORT = process.env.PORT || 3000;
