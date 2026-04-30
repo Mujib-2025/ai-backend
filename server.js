@@ -1,4 +1,4 @@
-// server.js – Mobile‑only AI backend (Ultra mode, enforced game mechanics, auto‑retry)
+// server.js – Mobile‑only AI backend (validated, reliable, no destructive retries)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -56,9 +56,9 @@ function extractJSON(text) {
   }
 }
 
-// --------------- Validate generated code ---------------
+// --------------- Soft validate – only warn, never reject ---------------
 function validateGeneratedCode(code, userMessage, mode) {
-  const errors = [];
+  const warnings = [];
 
   if (!code || typeof code !== "string" || code.trim().length === 0) {
     return ["Empty or missing code"];
@@ -74,58 +74,36 @@ function validateGeneratedCode(code, userMessage, mode) {
       lowerMsg.includes("snake") ||
       lowerMsg.includes("puzzle"));
 
-  // Basic structure checks
-  if (!lower.includes("<!doctype html") && !lower.includes("<!doctype")) {
-    errors.push("Missing DOCTYPE declaration");
+  if (!lower.includes("<!doctype")) {
+    warnings.push("Missing DOCTYPE declaration");
   }
   if (!lower.includes("<script")) {
-    errors.push("Missing <script> tag");
+    warnings.push("Missing <script> tag");
   }
 
-  // Game‑specific checks (only if the request was a game)
   if (isGame) {
-    // Must have event listeners (not inline)
     if (!lower.includes("addeventlistener")) {
-      errors.push(
-        "No addEventListener found – interactive elements likely missing",
-      );
+      warnings.push("No addEventListener found");
     }
-
-    // Must have some kind of game loop (requestAnimationFrame or setInterval)
     if (
       !lower.includes("requestanimationframe") &&
       !lower.includes("setinterval")
     ) {
-      errors.push(
-        "No game loop detected (requestAnimationFrame or setInterval)",
-      );
+      warnings.push("No game loop detected");
     }
-
-    // Must have a restart/reset mechanism
     if (!lower.includes("restart") && !lower.includes("reset")) {
-      errors.push("No restart / reset function or button found");
+      warnings.push("No restart/reset found");
     }
-
-    // Must have a score variable or display
     if (!lower.includes("score")) {
-      errors.push("No 'score' element or variable found");
+      warnings.push("No 'score' variable");
     }
-
-    // Must define at least one function (to avoid static pages)
     const functionMatches = code.match(/function\s+\w+/g);
     if (!functionMatches || functionMatches.length < 2) {
-      errors.push(
-        "Fewer than 2 functions defined – game logic likely incomplete",
-      );
-    }
-  } else {
-    // Non‑game pages: still require some interactivity
-    if (!lower.includes("addeventlistener") && !lower.includes("onclick")) {
-      errors.push("No event listeners found");
+      warnings.push("Fewer than 2 functions – game logic may be incomplete");
     }
   }
 
-  return errors;
+  return warnings; // only warnings, never a hard error
 }
 
 // --------------- System Prompt (Ultra mode, mobile, game enforcement) ---------------
@@ -158,7 +136,7 @@ function buildSystemPrompt(mode, sandboxHTML, userMessage) {
 
 8. **FULL GAME REQUIREMENT (TOP PRIORITY):**
 If this is a game, you MUST include:
-- Start state (game initializes correctly)
+- Start state
 - Game loop (update + render using requestAnimationFrame)
 - Player interaction (touch)
 - Game logic (movement, rules, collisions)
@@ -169,9 +147,9 @@ If this is a game, you MUST include:
 9. The game must be immediately playable on load.
 
 10. **CORE MECHANIC REQUIREMENT:**
-The main mechanic MUST be implemented and visible. It must update over time and affect game state (position, score, objects). No fake UI.
+The main mechanic MUST be implemented and visible. It must update over time and affect game state. No fake UI.
 
-11. **STATE DRIVEN LOGIC:** All core behavior must be driven by real state variables that change during execution.
+11. **STATE DRIVEN LOGIC:** All core behavior must be driven by real state variables.
 
 12. If using external libraries (like Three.js), use ES modules and <script type="module">.
 
@@ -198,14 +176,7 @@ The main mechanic MUST be implemented and visible. It must update over time and 
 
   const generateEnding = `**Output format:** ONLY a JSON object: { "code": "<full HTML>", "description": "one-sentence summary" }
 
-CRITICAL VALIDATION BEFORE OUTPUT:
-- The game (if any) must run without errors
-- All buttons must work
-- Score must update correctly
-- Game must reach a win or lose state
-- Restart must fully reset the game
-- The main mechanic is present and functional
-- Design for mobile portrait
+CRITICAL VALIDATION BEFORE OUTPUT: The game (if any) must run without errors, all buttons must work, score must update, win/lose must work, restart must reset everything. Design for mobile portrait.
 
 Your entire message must start with { and end with }. No markdown or explanation.`;
 
@@ -246,26 +217,25 @@ ${editEnding}`;
   }
 }
 
-// --------------- Retry‑enabled generation (non‑streaming) ---------------
-async function retryGenerate(
-  messages,
-  mode,
-  sandboxHTML,
-  userMessage,
-  maxRetries = 2,
-) {
-  let currentMessages = [...messages];
+// ============================
+//  POST /chat – Generate / Edit (non‑streaming, soft validation)
+// ============================
+app.post("/chat", async (req, res) => {
+  try {
+    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages array required" });
+    }
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const userMessage = messages[messages.length - 1]?.content || "";
     const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
+    const maxTokens = mode === "generate" ? 10000 : 4000;
+
     const completion = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
-      messages: [
-        { role: "system", content: systemContent },
-        ...currentMessages,
-      ],
+      messages: [{ role: "system", content: systemContent }, ...messages],
       temperature: 0.0,
-      max_tokens: mode === "generate" ? 10000 : 4000,
+      max_tokens: maxTokens,
       response_format: { type: "json_object" },
     });
 
@@ -277,66 +247,27 @@ async function retryGenerate(
       typeof parsed.code === "string" &&
       typeof parsed.description === "string"
     ) {
-      const errors = validateGeneratedCode(parsed.code, userMessage, mode);
-      if (errors.length === 0) {
-        return { code: parsed.code, description: parsed.description };
+      const warnings = validateGeneratedCode(parsed.code, userMessage, mode);
+      if (warnings.length > 0) {
+        // still return code, but include warnings in description
+        parsed.description += " | ⚠️ Warnings: " + warnings.join("; ");
       }
-
-      console.log(
-        `Attempt ${attempt + 1} failed validation:`,
-        errors.join(", "),
-      );
-      if (attempt < maxRetries) {
-        currentMessages.push({
-          role: "user",
-          content: `Your previous output was invalid. The following issues were found: ${errors.join("; ")}. Please fix ALL of them and return a complete, playable page.`,
-        });
-      } else {
-        // Max retries, return errors as description but still include last code (maybe partially fixed)
-        return {
-          code: parsed.code,
-          description: `⚠️ Game may be incomplete after ${maxRetries + 1} attempts. Issues: ${errors.join("; ")}`,
-        };
-      }
-    } else {
-      console.log(`Attempt ${attempt + 1} failed JSON parsing`);
-      if (attempt < maxRetries) {
-        currentMessages.push({
-          role: "user",
-          content:
-            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
-        });
-      } else {
-        return {
-          code: null,
-          description: "Failed to produce valid JSON after multiple attempts.",
-        };
-      }
-    }
-  }
-
-  return { code: null, description: "Generation failed." };
-}
-
-// ============================
-//  POST /chat – Non‑streaming (used for retries internally)
-// ============================
-app.post("/chat", async (req, res) => {
-  try {
-    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: "messages array required" });
+      return res.json({ code: parsed.code, description: parsed.description });
     }
 
-    const userMessage = messages[messages.length - 1]?.content || "";
-    const result = await retryGenerate(
-      messages,
-      mode,
-      sandboxHTML,
-      userMessage,
-      2,
-    );
-    res.json(result);
+    // Fallback if JSON fails – we still try to extract code (but log it as warning)
+    const codeMatch =
+      text.match(/```html\s*([\s\S]*?)\s*```/) ||
+      text.match(/<!DOCTYPE html[\s\S]*/i);
+    if (codeMatch) {
+      return res.json({
+        code: codeMatch[0].trim(),
+        description:
+          "Extracted HTML from non‑JSON output (quality not guaranteed).",
+      });
+    }
+
+    return res.json({ code: null, description: "Invalid response format." });
   } catch (err) {
     console.error("/chat error:", err);
     res
@@ -346,7 +277,7 @@ app.post("/chat", async (req, res) => {
 });
 
 // ============================
-//  POST /chat/stream – Streaming with retry fallback
+//  POST /chat/stream – Streaming (soft validation, no retry)
 // ============================
 app.post("/chat/stream", async (req, res) => {
   try {
@@ -364,7 +295,6 @@ app.post("/chat/stream", async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    // First attempt: streaming
     const stream = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
       messages: [{ role: "system", content: systemContent }, ...messages],
@@ -374,6 +304,7 @@ app.post("/chat/stream", async (req, res) => {
     });
 
     let fullContent = "";
+
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || "";
       if (delta) {
@@ -391,61 +322,24 @@ app.post("/chat/stream", async (req, res) => {
       typeof parsed.code === "string" &&
       typeof parsed.description === "string"
     ) {
-      const errors = validateGeneratedCode(parsed.code, userMessage, mode);
-      if (errors.length === 0) {
-        code = parsed.code;
-        description = parsed.description;
-      } else {
-        // Streaming failed validation – fallback to retry (non‑streaming)
-        console.log("Streaming result failed validation, retrying...");
-        res.write(
-          `data: ${JSON.stringify({ delta: "⚠️ Fixing issues..." })}\n\n`,
-        );
-
-        // Add error feedback to conversation for retry
-        const retryMessages = [
-          ...messages,
-          {
-            role: "user",
-            content: `Your previous output was invalid. The following issues were found: ${errors.join("; ")}. Please fix ALL of them and return a complete, playable page.`,
-          },
-        ];
-
-        const result = await retryGenerate(
-          retryMessages,
-          mode,
-          sandboxHTML,
-          userMessage,
-          1,
-        ); // 1 extra retry
-        code = result.code || parsed.code; // fallback to original if retry gave null
-        description = result.description;
+      code = parsed.code;
+      description = parsed.description;
+      const warnings = validateGeneratedCode(code, userMessage, mode);
+      if (warnings.length > 0) {
+        description += " | ⚠️ Warnings: " + warnings.join("; ");
       }
     } else {
-      // JSON parsing failed – fallback to retry
-      console.log("Streaming result failed JSON, retrying...");
-      res.write(
-        `data: ${JSON.stringify({ delta: "⚠️ Fixing output format..." })}\n\n`,
-      );
-
-      const retryMessages = [
-        ...messages,
-        {
-          role: "user",
-          content:
-            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
-        },
-      ];
-
-      const result = await retryGenerate(
-        retryMessages,
-        mode,
-        sandboxHTML,
-        userMessage,
-        1,
-      );
-      code = result.code;
-      description = result.description;
+      // Fallback extraction from raw text
+      const codeMatch =
+        fullContent.match(/```html\s*([\s\S]*?)\s*```/) ||
+        fullContent.match(/<!DOCTYPE html[\s\S]*/i);
+      if (codeMatch) {
+        code = codeMatch[0].trim();
+        description =
+          "Extracted HTML from non‑JSON output (quality not guaranteed).";
+      } else {
+        description = fullContent || "Invalid response format.";
+      }
     }
 
     res.write(`data: ${JSON.stringify({ done: true, code, description })}\n\n`);
@@ -491,7 +385,7 @@ app.post("/ask", async (req, res) => {
 // Health check
 app.get("/", (req, res) =>
   res.send(
-    "AI Backend v18 (validated, retry‑enforced game generation) is running.",
+    "AI Backend v19 (soft validation, stable game generation) is running.",
   ),
 );
 
