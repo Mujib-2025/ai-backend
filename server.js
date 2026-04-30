@@ -1,4 +1,4 @@
-// server.js – Mobile‑only AI backend (strict game enforcement, precise edit with doc validation, phone‑card layout)
+// server.js – Mobile‑only AI backend (strict game enforcement, precise edit with doc validation, 3 retries)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -56,7 +56,7 @@ function extractJSON(text) {
   }
 }
 
-// --------------- Validate generated code (mode‑aware) ---------------
+// --------------- Validate generated code (mode‑aware, stricter for games) ---------------
 function validateGeneratedCode(code, userMessage, mode) {
   const errors = [];
 
@@ -79,6 +79,7 @@ function validateGeneratedCode(code, userMessage, mode) {
     if (!lower.includes("<script")) errors.push("Missing <script> tag");
 
     if (isGame) {
+      // Core mechanics
       if (!lower.includes("addeventlistener"))
         errors.push(
           "No addEventListener – interactive elements will not work on mobile",
@@ -102,6 +103,44 @@ function validateGeneratedCode(code, userMessage, mode) {
         errors.push(
           "No touch/click event handlers – buttons won't work on mobile",
         );
+
+      // Stricter: restart button must be visible in HTML
+      const restartBtnRegex =
+        /<button[^>]*>[\s\S]*?(?:restart|reset)[\s\S]*?<\/button>/i;
+      if (!restartBtnRegex.test(code)) {
+        errors.push("No visible restart/reset button found in HTML");
+      }
+
+      // Stricter: restart function must actually reset game state (look for resetting score, clearing canvas, etc.)
+      const restartFuncRegex =
+        /function\s+(restart|reset)\s*\(\)[\s\S]*?\{[\s\S]*?\}/i;
+      const restartLogicIndicators =
+        /\bscore\s*=\s*0\b|\bresetGame\b|\bclearInterval\b|\bcancelAnimationFrame\b|\bctx\.clearRect\b|\bgameOver\s*=\s*false\b/i;
+      if (!restartFuncRegex.test(code) && !restartLogicIndicators.test(code)) {
+        errors.push("No restart/reset function that resets game state");
+      }
+
+      // Check that event listeners reference defined functions
+      const eventListenerRegex =
+        /addEventListener\s*\(\s*['"](?:click|touchstart|touchend)['"]\s*,\s*(\w+)/g;
+      let match;
+      const usedFunctions = new Set();
+      while ((match = eventListenerRegex.exec(code)) !== null) {
+        usedFunctions.add(match[1]);
+      }
+      // For each used function in event listeners, check if it's defined
+      for (const funcName of usedFunctions) {
+        const funcDefRegex = new RegExp(`function\\s+${funcName}\\s*\\(`);
+        if (
+          !funcDefRegex.test(code) &&
+          funcName !== "function" &&
+          funcName !== "null"
+        ) {
+          errors.push(
+            `Event listener references function '${funcName}' which is not defined`,
+          );
+        }
+      }
     }
   } else {
     // Edit mode: check for incorrect usage of document instead of doc
@@ -121,7 +160,7 @@ function validateGeneratedCode(code, userMessage, mode) {
   return errors;
 }
 
-// --------------- System Prompt (Ultra mode, mobile, game enforcement, phone‑card layout) ---------------
+// --------------- System Prompt (Ultra mode, mobile, game enforcement) ---------------
 function buildSystemPrompt(mode, sandboxHTML, userMessage) {
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -157,7 +196,7 @@ If this is a game, you MUST include:
 - Game logic (movement, rules, collisions)
 - Score system (visible and updating)
 - Win OR lose condition
-- Restart button that fully resets the game
+- Restart button that fully resets the game (visible in HTML, calls a function that resets all variables, score, canvas, intervals, etc.)
 
 9. The game must be immediately playable on load.
 
@@ -168,40 +207,32 @@ The main mechanic MUST be implemented and visible. It must update over time and 
 
 12. If using external libraries (like Three.js), use ES modules and <script type="module">.
 
-13. **PHONE‑CARD LAYOUT (CRITICAL):**
-The ENTIRE game/page must be displayed inside a vertical rectangle card centered on the page. This card represents a phone screen.
-- Create a container div with the following styles:
-  \`width: 100%; max-width: 420px; height: auto; aspect-ratio: 9 / 16; max-height: 95vh; margin: auto; border-radius: 24px; overflow: hidden; background: #fff; box-shadow: 0 0 30px rgba(0,0,0,0.5);\`
-- The body background must be dark (#0a0a0a or similar).
-- Position the card exactly in the center of the viewport using flexbox on the body: \`display: flex; justify-content: center; align-items: center; min-height: 100vh;\`.
-- ALL content (game canvas, UI, buttons) must go INSIDE this card. Nothing outside except the dark background.
-- The card must not cause any scrollbars; it must fit within the viewport.
-- On very small screens, use \`@media (max-height: 700px) { … }\` to reduce the card's max-height to 80vh.
+13. **STRICT MOBILE VERTICAL RECTANGLE:** Portrait, flex column, no horizontal scroll. Use touch-action: manipulation; user-select: none; on interactive elements. Buttons ≥ 44px tap target. No keyboard controls.
 
 14. **TOUCH EVENTS:** All interactive elements MUST respond to touch (touchstart/click). Use both if needed for mobile.
 `;
 
-  const layout = `Mobile layout: Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units. The game is displayed inside a centered phone card as described above.`;
+  const layout = `Mobile layout: Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units.`;
 
   const gameExtra = isGame
     ? `This is a COMPLETE MOBILE GAME. Only touch controls. Must be fully playable, with score, win/lose, restart.`
-    : `This is a mobile website displayed inside a centered phone card. Include header, main content, footer.`;
+    : `This is a mobile website. Include header, main content, footer.`;
 
   const qualityText = `ULTRA QUALITY: Write complete, production‑ready code. Every feature requested must be fully implemented. No simplifications.`;
 
   const mobileSizing = isGame
-    ? `Mobile game sizing: Use relative units, design for 9:16 ratio within the card.`
+    ? `Mobile game sizing: Use relative units, design for 9:16.`
     : "";
 
   const threeD = is3D
-    ? `3D game (Three.js): Use ES modules (<script type="module">). Import like: import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js'. Mobile touch only. The Three.js canvas must be placed inside the phone card.`
+    ? `3D game (Three.js): Use ES modules (<script type="module">). Import like: import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js'. Mobile touch only.`
     : "";
 
   const imageRules = `Images: Always use absolute HTTPS URLs (https://picsum.photos/400/300 or https://source.unsplash.com/featured/?{topic}). Never local paths.`;
 
   const generateEnding = `**Output format:** ONLY a JSON object: { "code": "<full HTML>", "description": "one-sentence summary" }
 
-CRITICAL VALIDATION BEFORE OUTPUT: The game must be error-free, have working buttons, score update, win/lose, and restart. The page must be displayed inside a centered phone card as specified.
+CRITICAL VALIDATION BEFORE OUTPUT: The game must be error-free, have working buttons, score update, win/lose, and a **visible restart button** that calls a defined function which resets the entire game. Design for mobile portrait.
 
 Your entire message must start with { and end with }. No markdown or explanation.`;
 
@@ -227,8 +258,9 @@ ${sandboxHTML || "(empty)"}
 Output format: { "code": "your JavaScript code", "description": "brief summary of change" }
 
 Your entire message must start with { and end with }. No markdown or explanation.`;
+
   if (mode === "generate") {
-    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page STRICTLY for mobile portrait, displayed inside a centered phone card.
+    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page STRICTLY for mobile portrait.
 ${mandatoryRules}
 ${layout}
 ${gameExtra}
@@ -249,7 +281,7 @@ async function retryGenerate(
   mode,
   sandboxHTML,
   userMessage,
-  maxRetries = 2,
+  maxRetries = 3, // increased from 2 to 3
 ) {
   let currentMessages = [...messages];
 
@@ -284,18 +316,18 @@ async function retryGenerate(
         errors.join(", "),
       );
       if (attempt < maxRetries) {
-        // Build a correction message specific to the mode
+        // Build correction message specific to issues found
         let correction = `Your previous output was invalid. The following issues were found: ${errors.join("; ")}.`;
         if (mode === "edit") {
           correction +=
-            " Remember: you MUST use the provided 'doc' variable for all DOM access, not 'document'. Use doc.querySelector, doc.getElementById, etc.";
+            " Remember: you MUST use the provided 'doc' variable for all DOM access, not 'document'.";
         } else {
           correction +=
-            " Please fix ALL of them and return a complete, playable page inside the phone card. Make sure all buttons work via touch events, game loop exists, score, and restart.";
+            " Please fix ALL of them and return a complete, playable page. Ensure all interactive elements work via touch events, proper game loop, score, restart button with reset logic.";
         }
         currentMessages.push({ role: "user", content: correction });
       } else {
-        // Max retries – still return code with warning
+        // Max retries – still return code but with a clear warning
         return {
           code: parsed.code,
           description: `⚠️ ${mode === "edit" ? "Edit" : "Game"} may be incomplete after ${maxRetries + 1} attempts. Issues: ${errors.join("; ")}`,
@@ -310,7 +342,7 @@ async function retryGenerate(
             "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
         });
       } else {
-        // Last attempt – fallback extraction only as last resort
+        // Last resort fallback
         const codeMatch =
           text.match(/```html\s*([\s\S]*?)\s*```/) ||
           text.match(/<!DOCTYPE html[\s\S]*/i);
@@ -359,7 +391,7 @@ app.post("/chat", async (req, res) => {
       mode,
       sandboxHTML,
       userMessage,
-      2,
+      3, // 3 retries
     );
     res.json(result);
   } catch (err) {
@@ -432,7 +464,7 @@ app.post("/chat/stream", async (req, res) => {
             " Remember to use 'doc' for all DOM operations, not 'document'.";
         } else {
           correction +=
-            " Please fix ALL of them and return a complete, playable page inside the phone card.";
+            " Please fix ALL of them and return a complete, playable page.";
         }
         const retryMessages = [
           ...messages,
@@ -444,7 +476,7 @@ app.post("/chat/stream", async (req, res) => {
           mode,
           sandboxHTML,
           userMessage,
-          1,
+          3, // 3 extra attempts after first failure
         );
         code = result.code || parsed.code;
         description = result.description;
@@ -468,7 +500,7 @@ app.post("/chat/stream", async (req, res) => {
         mode,
         sandboxHTML,
         userMessage,
-        1,
+        3,
       );
       code = result.code;
       description = result.description;
@@ -516,9 +548,7 @@ app.post("/ask", async (req, res) => {
 
 // Health check
 app.get("/", (req, res) =>
-  res.send(
-    "AI Backend v22 (phone‑card layout enforced, edit mode fixes, doc enforcement) is running.",
-  ),
+  res.send("AI Backend v22 (stricter game validation, 3 retries) is running."),
 );
 
 const PORT = process.env.PORT || 3000;
