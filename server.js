@@ -288,7 +288,7 @@ async function retryGenerate(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash",
+      model: "deepseek/deepseek-v4-pro",
       messages: [
         { role: "system", content: systemContent },
         ...currentMessages,
@@ -404,7 +404,7 @@ app.post("/chat/stream", async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
 
     const stream = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash",
+      model: "deepseek/deepseek-v4-pro",
       messages: [{ role: "system", content: systemContent }, ...messages],
       temperature: 0.0,
       max_tokens: maxTokens,
@@ -501,7 +501,7 @@ app.post("/ask", async (req, res) => {
       content: `You are a helpful assistant. The user is viewing a mobile web page:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\nAnswer the question about it concisely. No code unless asked.`,
     };
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-flash",
+      model: "deepseek/deepseek-v4-pro",
       messages: [systemMessage, { role: "user", content: question }],
       temperature: 0.7,
       max_tokens: 800,
