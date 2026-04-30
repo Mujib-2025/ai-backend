@@ -1,4 +1,4 @@
-// server.js – Mobile‑only AI backend (strict touch‑only, no keyboard, 3 retries)
+// server.js – Mobile‑only AI backend (strict touch‑only, no keyboard, 3 retries, Pro fallback)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -77,7 +77,7 @@ function validateGeneratedCode(code, userMessage, mode) {
     if (!lower.includes("<!doctype")) errors.push("Missing DOCTYPE");
     if (!lower.includes("<script")) errors.push("Missing <script> tag");
 
-    // ---------- ABSOLUTE RULE: NO KEYBOARD ----------
+    // ABSOLUTE RULE: NO KEYBOARD
     if (/\bkeydown\b|\bkeyup\b|\bkeypress\b|\bkeyboard\b/i.test(code)) {
       errors.push(
         "Keyboard controls detected – touch‑only mobile required. Remove all keyboard event listeners.",
@@ -148,10 +148,9 @@ function validateGeneratedCode(code, userMessage, mode) {
       }
     }
   } else {
-    // Edit mode: check for incorrect usage of document instead of doc
     if (/\bdocument\./.test(code)) {
       errors.push(
-        "Uses 'document' instead of the provided 'doc' variable. All DOM access must go through 'doc'.",
+        "Uses 'document' instead of 'doc'. All DOM access must go through 'doc'.",
       );
     }
     if (code.includes("<!DOCTYPE") || code.includes("<html")) {
@@ -275,20 +274,36 @@ ${editEnding}`;
   }
 }
 
-// --------------- Retry‑enabled generation (non‑streaming) ---------------
+// --------------- Retry‑enabled generation with Pro fallback ---------------
 async function retryGenerate(
   messages,
   mode,
   sandboxHTML,
   userMessage,
   maxRetries = 3,
+  useProInitially = false,
 ) {
   let currentMessages = [...messages];
+  let finalModel = null;
+  let finalAttempts = 0;
+
+  // Determine starting model
+  let activeModel = useProInitially
+    ? "deepseek/deepseek-v4-pro"
+    : "deepseek/deepseek-v4-flash";
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    // For very first attempt, use the initial model (flash or pro).
+    // For retries (attempt > 0), always switch to Pro.
+    if (attempt > 0) {
+      activeModel = "deepseek/deepseek-v4-pro";
+    }
+
+    console.log(`Attempt ${attempt + 1} using model: ${activeModel}`);
+
     const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-pro",
+      model: activeModel,
       messages: [
         { role: "system", content: systemContent },
         ...currentMessages,
@@ -308,10 +323,20 @@ async function retryGenerate(
     ) {
       const errors = validateGeneratedCode(parsed.code, userMessage, mode);
       if (errors.length === 0) {
-        return { code: parsed.code, description: parsed.description };
+        finalModel = activeModel;
+        finalAttempts = attempt + 1;
+        return {
+          code: parsed.code,
+          description: parsed.description,
+          model: finalModel,
+          attempts: finalAttempts,
+        };
       }
 
-      console.log(`Attempt ${attempt + 1} failed:`, errors.join(", "));
+      console.log(
+        `Attempt ${attempt + 1} failed with ${activeModel}:`,
+        errors.join(", "),
+      );
       if (attempt < maxRetries) {
         let correction = `Your previous output was invalid. Issues: ${errors.join("; ")}.`;
         if (mode === "edit") {
@@ -322,13 +347,18 @@ async function retryGenerate(
         }
         currentMessages.push({ role: "user", content: correction });
       } else {
+        // Max retries reached – return last code with warning
         return {
           code: parsed.code,
-          description: `⚠️ ${mode === "edit" ? "Edit" : "Game"} may be incomplete after ${maxRetries + 1} attempts. Issues: ${errors.join("; ")}`,
+          description: `⚠️ ${mode === "edit" ? "Edit" : "Game"} may be incomplete after ${attempt + 1} attempts. Issues: ${errors.join("; ")}`,
+          model: activeModel,
+          attempts: attempt + 1,
         };
       }
     } else {
-      console.log(`Attempt ${attempt + 1} JSON parse failed`);
+      console.log(
+        `Attempt ${attempt + 1} failed JSON parsing with ${activeModel}`,
+      );
       if (attempt < maxRetries) {
         currentMessages.push({
           role: "user",
@@ -336,6 +366,7 @@ async function retryGenerate(
             "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
         });
       } else {
+        // Last resort fallback extraction
         const codeMatch =
           text.match(/```html\s*([\s\S]*?)\s*```/) ||
           text.match(/<!DOCTYPE html[\s\S]*/i);
@@ -350,37 +381,58 @@ async function retryGenerate(
             : codeMatch
               ? codeMatch[0]
               : null;
-        if (fallbackCode)
+        if (fallbackCode) {
           return {
             code: fallbackCode.trim(),
             description:
               "Extracted code from non‑JSON output (quality not guaranteed).",
+            model: activeModel,
+            attempts: attempt + 1,
           };
+        }
         return {
           code: null,
-          description: "Failed to produce valid JSON after multiple attempts.",
+          description: `Failed to produce valid JSON after ${attempt + 1} attempts with model ${activeModel}.`,
+          model: activeModel,
+          attempts: attempt + 1,
         };
       }
     }
   }
-  return { code: null, description: "Generation failed." };
+
+  return {
+    code: null,
+    description: "Generation failed.",
+    model: finalModel || activeModel,
+    attempts: finalAttempts,
+  };
 }
 
+// ============================
+//  POST /chat – Non‑streaming
 // ============================
 app.post("/chat", async (req, res) => {
   try {
     const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-    if (!messages || !Array.isArray(messages))
+    if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array required" });
+    }
+
     const userMessage = messages[messages.length - 1]?.content || "";
     const result = await retryGenerate(
       messages,
       mode,
       sandboxHTML,
       userMessage,
-      3,
+      3, // max 4 attempts total if starting with flash
+      false, // start with flash
     );
-    res.json(result);
+
+    // Append model/attempt info to description for logging
+    const info = ` | ✅ Model: ${result.model}, Attempts: ${result.attempts}`;
+    const finalDescription = (result.description || "") + info;
+
+    res.json({ code: result.code, description: finalDescription });
   } catch (err) {
     console.error("/chat error:", err);
     res
@@ -389,11 +441,16 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// ============================
+//  POST /chat/stream – Streaming with Pro fallback
+// ============================
 app.post("/chat/stream", async (req, res) => {
   try {
     const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-    if (!messages || !Array.isArray(messages))
+    if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array required" });
+    }
+
     const userMessage = messages[messages.length - 1]?.content || "";
     const maxTokens = mode === "generate" ? 10000 : 4000;
     const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
@@ -403,8 +460,10 @@ app.post("/chat/stream", async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
+    // First attempt: streaming with flash model
+    console.log("Streaming attempt 1 using deepseek/deepseek-v4-flash");
     const stream = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-pro",
+      model: "deepseek/deepseek-v4-flash",
       messages: [{ role: "system", content: systemContent }, ...messages],
       temperature: 0.0,
       max_tokens: maxTokens,
@@ -423,6 +482,8 @@ app.post("/chat/stream", async (req, res) => {
     let parsed = extractJSON(fullContent);
     let code = null;
     let description = "";
+    let modelUsed = "deepseek/deepseek-v4-flash";
+    let attempts = 1;
 
     if (
       parsed &&
@@ -434,32 +495,42 @@ app.post("/chat/stream", async (req, res) => {
         code = parsed.code;
         description = parsed.description;
       } else {
-        console.log("Stream failed validation, retrying...");
+        console.log("Streaming flash failed validation, retrying with Pro...");
         res.write(
-          `data: ${JSON.stringify({ delta: "⚠️ Fixing issues..." })}\n\n`,
+          `data: ${JSON.stringify({ delta: "⚠️ Fixing issues with Pro model..." })}\n\n`,
         );
+
         let correction = `Your previous output was invalid. Issues: ${errors.join("; ")}.`;
-        if (mode === "edit") correction += " Use 'doc' instead of 'document'.";
-        else correction += " Fix all issues. No keyboard controls, touch only.";
+        if (mode === "edit") {
+          correction += " Remember to use 'doc' for all DOM operations.";
+        } else {
+          correction +=
+            " Fix all issues. Use touch controls only, no keyboard.";
+        }
         const retryMessages = [
           ...messages,
           { role: "user", content: correction },
         ];
+
         const result = await retryGenerate(
           retryMessages,
           mode,
           sandboxHTML,
           userMessage,
-          3,
+          2, // allow 3 total pro attempts, but we already used 1 flash, so 2 more
+          true, // use Pro initially because flash already failed
         );
         code = result.code || parsed.code;
         description = result.description;
+        modelUsed = result.model || "deepseek/deepseek-v4-pro";
+        attempts = 1 + (result.attempts || 0); // flash attempt + retries
       }
     } else {
-      console.log("Stream JSON parse failed, retrying...");
+      console.log("Streaming flash JSON parse failed, retrying with Pro...");
       res.write(
-        `data: ${JSON.stringify({ delta: "⚠️ Fixing output format..." })}\n\n`,
+        `data: ${JSON.stringify({ delta: "⚠️ Fixing output format with Pro..." })}\n\n`,
       );
+
       const retryMessages = [
         ...messages,
         {
@@ -473,13 +544,22 @@ app.post("/chat/stream", async (req, res) => {
         mode,
         sandboxHTML,
         userMessage,
-        3,
+        2,
+        true, // use Pro
       );
       code = result.code;
       description = result.description;
+      modelUsed = result.model || "deepseek/deepseek-v4-pro";
+      attempts = 1 + (result.attempts || 0);
     }
 
-    res.write(`data: ${JSON.stringify({ done: true, code, description })}\n\n`);
+    // Append model/attempt info
+    const info = ` | ✅ Model: ${modelUsed}, Attempts: ${attempts}`;
+    const finalDescription = (description || "") + info;
+
+    res.write(
+      `data: ${JSON.stringify({ done: true, code, description: finalDescription })}\n\n`,
+    );
     res.end();
   } catch (err) {
     console.error("/chat/stream error:", err);
@@ -492,20 +572,26 @@ app.post("/chat/stream", async (req, res) => {
   }
 });
 
+// ============================
+//  POST /ask – Page assistant (unchanged)
+// ============================
 app.post("/ask", async (req, res) => {
   try {
     const { question, sandboxHTML } = req.body;
     if (!question) return res.status(400).json({ reply: "Missing question." });
+
     const systemMessage = {
       role: "system",
       content: `You are a helpful assistant. The user is viewing a mobile web page:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\nAnswer the question about it concisely. No code unless asked.`,
     };
+
     const completion = await client.chat.completions.create({
-      model: "deepseek/deepseek-v4-pro",
+      model: "deepseek/deepseek-v4-flash",
       messages: [systemMessage, { role: "user", content: question }],
       temperature: 0.7,
       max_tokens: 800,
     });
+
     res.json({ reply: completion.choices[0].message.content });
   } catch (err) {
     console.error("/ask error:", err);
@@ -513,8 +599,9 @@ app.post("/ask", async (req, res) => {
   }
 });
 
+// Health check
 app.get("/", (req, res) =>
-  res.send("AI Backend v23 (touch‑only enforcement, no keyboard) is running."),
+  res.send("AI Backend v24 (Pro fallback, model logging) is running."),
 );
 
 const PORT = process.env.PORT || 3000;
