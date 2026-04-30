@@ -1,4 +1,4 @@
-// server.js – Mobile‑only AI backend (Ultra mode, core game mechanics #1, precise edits)
+// server.js – Mobile‑only AI backend (Ultra mode, enforced game mechanics, auto‑retry)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -26,7 +26,7 @@ const client = new OpenAI({
   },
 });
 
-// --------------- Extract JSON ---------------
+// --------------- Extract JSON (strict) ---------------
 function extractJSON(text) {
   try {
     return JSON.parse(text);
@@ -37,6 +37,7 @@ function extractJSON(text) {
       .replace(/```javascript\s*([\s\S]*?)\s*```/g, "$1")
       .replace(/```\s*([\s\S]*?)\s*```/g, "$1")
       .trim();
+
     const start = cleaned.indexOf("{");
     const end = cleaned.lastIndexOf("}");
     if (start !== -1 && end !== -1 && end > start) {
@@ -55,24 +56,80 @@ function extractJSON(text) {
   }
 }
 
-// --------------- Extract HTML/JS ---------------
-function extractCodeFromRawText(text, mode) {
-  if (mode === "generate") {
-    const htmlMatch = text.match(/```html\s*([\s\S]*?)\s*```/);
-    if (htmlMatch) return htmlMatch[1].trim();
-    const doctypeMatch = text.match(/<!DOCTYPE html[\s\S]*/i);
-    if (doctypeMatch) return doctypeMatch[0].trim();
+// --------------- Validate generated code ---------------
+function validateGeneratedCode(code, userMessage, mode) {
+  const errors = [];
+
+  if (!code || typeof code !== "string" || code.trim().length === 0) {
+    return ["Empty or missing code"];
   }
-  const jsMatch = text.match(/```javascript\s*([\s\S]*?)\s*```/);
-  if (jsMatch) return jsMatch[1].trim();
-  const codeMatch = text.match(/```\s*([\s\S]*?)```/);
-  if (codeMatch) return codeMatch[1].trim();
-  return null;
+
+  const lower = code.toLowerCase();
+  const lowerMsg = (userMessage || "").toLowerCase();
+  const isGame =
+    mode === "generate" &&
+    (lowerMsg.includes("game") ||
+      lowerMsg.includes("play") ||
+      lowerMsg.includes("tic") ||
+      lowerMsg.includes("snake") ||
+      lowerMsg.includes("puzzle"));
+
+  // Basic structure checks
+  if (!lower.includes("<!doctype html") && !lower.includes("<!doctype")) {
+    errors.push("Missing DOCTYPE declaration");
+  }
+  if (!lower.includes("<script")) {
+    errors.push("Missing <script> tag");
+  }
+
+  // Game‑specific checks (only if the request was a game)
+  if (isGame) {
+    // Must have event listeners (not inline)
+    if (!lower.includes("addeventlistener")) {
+      errors.push(
+        "No addEventListener found – interactive elements likely missing",
+      );
+    }
+
+    // Must have some kind of game loop (requestAnimationFrame or setInterval)
+    if (
+      !lower.includes("requestanimationframe") &&
+      !lower.includes("setinterval")
+    ) {
+      errors.push(
+        "No game loop detected (requestAnimationFrame or setInterval)",
+      );
+    }
+
+    // Must have a restart/reset mechanism
+    if (!lower.includes("restart") && !lower.includes("reset")) {
+      errors.push("No restart / reset function or button found");
+    }
+
+    // Must have a score variable or display
+    if (!lower.includes("score")) {
+      errors.push("No 'score' element or variable found");
+    }
+
+    // Must define at least one function (to avoid static pages)
+    const functionMatches = code.match(/function\s+\w+/g);
+    if (!functionMatches || functionMatches.length < 2) {
+      errors.push(
+        "Fewer than 2 functions defined – game logic likely incomplete",
+      );
+    }
+  } else {
+    // Non‑game pages: still require some interactivity
+    if (!lower.includes("addeventlistener") && !lower.includes("onclick")) {
+      errors.push("No event listeners found");
+    }
+  }
+
+  return errors;
 }
 
-// --------------- System Prompt (Ultra mode, mobile, precise edits) ---------------
+// --------------- System Prompt (Ultra mode, mobile, game enforcement) ---------------
 function buildSystemPrompt(mode, sandboxHTML, userMessage) {
-  const isGenerate = mode === "generate";
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
     lowerMsg.includes("game") ||
@@ -80,6 +137,7 @@ function buildSystemPrompt(mode, sandboxHTML, userMessage) {
     lowerMsg.includes("tic") ||
     lowerMsg.includes("snake") ||
     lowerMsg.includes("puzzle");
+
   const is3D =
     lowerMsg.includes("3d") ||
     lowerMsg.includes("three.js") ||
@@ -98,87 +156,81 @@ function buildSystemPrompt(mode, sandboxHTML, userMessage) {
 6. ALL functions referenced MUST be defined.
 7. No placeholder code, no TODOs, no comments like "implement later".
 
-8. **FULL GAME REQUIREMENT:**
-If you generate a game, it MUST include:
-- Start state
-- Game loop (update + render using requestAnimationFrame if needed)
+8. **FULL GAME REQUIREMENT (TOP PRIORITY):**
+If this is a game, you MUST include:
+- Start state (game initializes correctly)
+- Game loop (update + render using requestAnimationFrame)
 - Player interaction (touch)
-- Game logic (movement, rules, collisions, etc.)
+- Game logic (movement, rules, collisions)
 - Score system (visible and updating)
 - Win OR lose condition
 - Restart button that fully resets the game
 
-9. **The game must be immediately playable on load.**
+9. The game must be immediately playable on load.
 
-10. **Before outputting, mentally simulate gameplay.**
+10. **CORE MECHANIC REQUIREMENT:**
+The main mechanic MUST be implemented and visible. It must update over time and affect game state (position, score, objects). No fake UI.
 
-11. **CORE MECHANIC REQUIREMENT (TOP PRIORITY):**
-The main mechanic of the app/game MUST be implemented and visible.
-- Identify the primary mechanic from the user request
-- That mechanic MUST exist as working code (not just UI)
-- The mechanic MUST update over time or through interaction
-- The mechanic MUST affect the game state (position, score, objects, etc.)
-If the main mechanic is missing, static, or not functional, the output is INVALID.
+11. **STATE DRIVEN LOGIC:** All core behavior must be driven by real state variables that change during execution.
 
-12. **NO FAKE IMPLEMENTATIONS:** Do NOT simulate functionality with static visuals.
+12. If using external libraries (like Three.js), use ES modules and <script type="module">.
 
-13. **STATE DRIVEN LOGIC:** All core behavior must be driven by real state variables.
-
-14. **If using external libraries (like Three.js), you MUST use ES modules and <script type="module">.**
-
-15. **STRICT MOBILE VERTICAL RECTANGLE:**
-- Portrait (9:16), flex column, no horizontal scroll.
-- Use \`touch-action: manipulation; user-select: none;\` on interactive elements.
-- Touch‑friendly: buttons ≥ 44px tap target.
-- No keyboard controls.
+13. **STRICT MOBILE VERTICAL RECTANGLE:** Portrait, flex column, no horizontal scroll. Use touch-action: manipulation; user-select: none; on interactive elements. Buttons ≥ 44px tap target. No keyboard controls.
 `;
 
-  const layout = `**Mobile layout:** Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units (vw, vh, %).`;
+  const layout = `Mobile layout: Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units.`;
 
   const gameExtra = isGame
-    ? `**This is a COMPLETE MOBILE GAME.** Must be fully playable from start to finish. Include score, win/lose, restart. Only touch controls.`
-    : `**This is a mobile website.** Include header, main content, footer.`;
+    ? `This is a COMPLETE MOBILE GAME. Only touch controls. Must be fully playable, with score, win/lose, restart.`
+    : `This is a mobile website. Include header, main content, footer.`;
 
-  const qualityText = `**ULTRA QUALITY:** Write complete, production‑ready code. Every feature requested must be fully implemented. No simplifications.`;
+  const qualityText = `ULTRA QUALITY: Write complete, production‑ready code. Every feature requested must be fully implemented. No simplifications.`;
 
   const mobileSizing = isGame
-    ? `**Mobile game sizing:** Use relative units, design for 9:16.`
+    ? `Mobile game sizing: Use relative units, design for 9:16.`
     : "";
 
   const threeD = is3D
-    ? `**3D game (Three.js):** Use ES modules (<script type="module">). Import like: import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js'. Mobile touch only.`
+    ? `3D game (Three.js): Use ES modules (<script type="module">). Import like: import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js'. Mobile touch only.`
     : "";
 
-  const imageRules = `**Images:** Always use absolute HTTPS URLs (\`https://picsum.photos/400/300\` or \`https://source.unsplash.com/featured/?{topic}\`). Never local paths.`;
+  const imageRules = `Images: Always use absolute HTTPS URLs (https://picsum.photos/400/300 or https://source.unsplash.com/featured/?{topic}). Never local paths.`;
 
   const generateEnding = `**Output format:** ONLY a JSON object: { "code": "<full HTML>", "description": "one-sentence summary" }
 
-**CRITICAL VALIDATION BEFORE OUTPUT:** The main mechanic must be present and functional. The game must run without errors, score must update, win/lose must work, restart must reset everything. Design for mobile portrait.
+CRITICAL VALIDATION BEFORE OUTPUT:
+- The game (if any) must run without errors
+- All buttons must work
+- Score must update correctly
+- Game must reach a win or lose state
+- Restart must fully reset the game
+- The main mechanic is present and functional
+- Design for mobile portrait
 
-Your entire message must start with \`{\` and end with \`}\`. No markdown or explanation.`;
+Your entire message must start with { and end with }. No markdown or explanation.`;
 
   const editEnding = `**How your code is executed:**
 \`\`\`
 new Function("sandbox", yourCode)(sandboxElement)
 \`\`\`
-The parameter \`sandbox\` is the container DIV. To access the iframe content:
+The parameter sandbox is the container DIV. To access the iframe content:
 \`\`\`
 const iframe = sandbox.querySelector('iframe#sandbox-iframe');
 const doc = iframe ? iframe.contentDocument : sandbox.ownerDocument;
 \`\`\`
-Use \`doc\` for all DOM changes.
+Use doc for all DOM changes.
 
-**Current sandbox content:**
+Current sandbox content:
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
 
-**PRECISE EDIT MODE:** You must carefully read the user's request and modify ONLY the specific part(s) of the existing code that need to be changed. Do not rewrite the entire page unless explicitly requested. Understand the user's intent exactly.
+PRECISE EDIT MODE: Modify ONLY the specific part(s) requested by the user. Do not rewrite the entire page unless explicitly asked.
 
 ${mandatoryRules}
-**Output format:** { "code": "your JavaScript code", "description": "brief summary of what was changed" }`;
+Output format: { "code": "your JavaScript code", "description": "brief summary of change" }`;
 
-  if (isGenerate) {
+  if (mode === "generate") {
     return `You are an expert front‑end developer. Write a complete, self‑contained HTML page STRICTLY for mobile portrait.
 ${mandatoryRules}
 ${layout}
@@ -194,25 +246,26 @@ ${editEnding}`;
   }
 }
 
-// ============================
-//  POST /chat – Non‑streaming (Ultra mode)
-// ============================
-app.post("/chat", async (req, res) => {
-  try {
-    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-    if (!messages || !Array.isArray(messages))
-      return res.status(400).json({ error: "messages array required" });
+// --------------- Retry‑enabled generation (non‑streaming) ---------------
+async function retryGenerate(
+  messages,
+  mode,
+  sandboxHTML,
+  userMessage,
+  maxRetries = 2,
+) {
+  let currentMessages = [...messages];
 
-    const userMessage = messages[messages.length - 1]?.content || "";
-    // Ultra tokens – generous limits
-    const maxTokens = mode === "generate" ? 10000 : 4000;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
-
     const completion = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
-      messages: [{ role: "system", content: systemContent }, ...messages],
+      messages: [
+        { role: "system", content: systemContent },
+        ...currentMessages,
+      ],
       temperature: 0.0,
-      max_tokens: maxTokens,
+      max_tokens: mode === "generate" ? 10000 : 4000,
       response_format: { type: "json_object" },
     });
 
@@ -224,16 +277,66 @@ app.post("/chat", async (req, res) => {
       typeof parsed.code === "string" &&
       typeof parsed.description === "string"
     ) {
-      return res.json({ code: parsed.code, description: parsed.description });
+      const errors = validateGeneratedCode(parsed.code, userMessage, mode);
+      if (errors.length === 0) {
+        return { code: parsed.code, description: parsed.description };
+      }
+
+      console.log(
+        `Attempt ${attempt + 1} failed validation:`,
+        errors.join(", "),
+      );
+      if (attempt < maxRetries) {
+        currentMessages.push({
+          role: "user",
+          content: `Your previous output was invalid. The following issues were found: ${errors.join("; ")}. Please fix ALL of them and return a complete, playable page.`,
+        });
+      } else {
+        // Max retries, return errors as description but still include last code (maybe partially fixed)
+        return {
+          code: parsed.code,
+          description: `⚠️ Game may be incomplete after ${maxRetries + 1} attempts. Issues: ${errors.join("; ")}`,
+        };
+      }
     } else {
-      const code = extractCodeFromRawText(text, mode);
-      if (code)
-        return res.json({ code, description: "Auto‑extracted from response." });
-      return res.json({
-        code: null,
-        description: text || "Invalid response format.",
-      });
+      console.log(`Attempt ${attempt + 1} failed JSON parsing`);
+      if (attempt < maxRetries) {
+        currentMessages.push({
+          role: "user",
+          content:
+            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
+        });
+      } else {
+        return {
+          code: null,
+          description: "Failed to produce valid JSON after multiple attempts.",
+        };
+      }
     }
+  }
+
+  return { code: null, description: "Generation failed." };
+}
+
+// ============================
+//  POST /chat – Non‑streaming (used for retries internally)
+// ============================
+app.post("/chat", async (req, res) => {
+  try {
+    const { messages, mode = "edit", sandboxHTML = "" } = req.body;
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages array required" });
+    }
+
+    const userMessage = messages[messages.length - 1]?.content || "";
+    const result = await retryGenerate(
+      messages,
+      mode,
+      sandboxHTML,
+      userMessage,
+      2,
+    );
+    res.json(result);
   } catch (err) {
     console.error("/chat error:", err);
     res
@@ -243,13 +346,14 @@ app.post("/chat", async (req, res) => {
 });
 
 // ============================
-//  POST /chat/stream – Streaming (Ultra mode)
+//  POST /chat/stream – Streaming with retry fallback
 // ============================
 app.post("/chat/stream", async (req, res) => {
   try {
     const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-    if (!messages || !Array.isArray(messages))
+    if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages array required" });
+    }
 
     const userMessage = messages[messages.length - 1]?.content || "";
     const maxTokens = mode === "generate" ? 10000 : 4000;
@@ -260,6 +364,7 @@ app.post("/chat/stream", async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
+    // First attempt: streaming
     const stream = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-flash",
       messages: [{ role: "system", content: systemContent }, ...messages],
@@ -269,7 +374,6 @@ app.post("/chat/stream", async (req, res) => {
     });
 
     let fullContent = "";
-
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || "";
       if (delta) {
@@ -287,13 +391,61 @@ app.post("/chat/stream", async (req, res) => {
       typeof parsed.code === "string" &&
       typeof parsed.description === "string"
     ) {
-      code = parsed.code;
-      description = parsed.description;
+      const errors = validateGeneratedCode(parsed.code, userMessage, mode);
+      if (errors.length === 0) {
+        code = parsed.code;
+        description = parsed.description;
+      } else {
+        // Streaming failed validation – fallback to retry (non‑streaming)
+        console.log("Streaming result failed validation, retrying...");
+        res.write(
+          `data: ${JSON.stringify({ delta: "⚠️ Fixing issues..." })}\n\n`,
+        );
+
+        // Add error feedback to conversation for retry
+        const retryMessages = [
+          ...messages,
+          {
+            role: "user",
+            content: `Your previous output was invalid. The following issues were found: ${errors.join("; ")}. Please fix ALL of them and return a complete, playable page.`,
+          },
+        ];
+
+        const result = await retryGenerate(
+          retryMessages,
+          mode,
+          sandboxHTML,
+          userMessage,
+          1,
+        ); // 1 extra retry
+        code = result.code || parsed.code; // fallback to original if retry gave null
+        description = result.description;
+      }
     } else {
-      code = extractCodeFromRawText(fullContent, mode);
-      description = code
-        ? "Extracted from raw AI response."
-        : fullContent || "Invalid response format.";
+      // JSON parsing failed – fallback to retry
+      console.log("Streaming result failed JSON, retrying...");
+      res.write(
+        `data: ${JSON.stringify({ delta: "⚠️ Fixing output format..." })}\n\n`,
+      );
+
+      const retryMessages = [
+        ...messages,
+        {
+          role: "user",
+          content:
+            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
+        },
+      ];
+
+      const result = await retryGenerate(
+        retryMessages,
+        mode,
+        sandboxHTML,
+        userMessage,
+        1,
+      );
+      code = result.code;
+      description = result.description;
     }
 
     res.write(`data: ${JSON.stringify({ done: true, code, description })}\n\n`);
@@ -310,7 +462,7 @@ app.post("/chat/stream", async (req, res) => {
 });
 
 // ============================
-//  POST /ask – Page assistant
+//  POST /ask – Page assistant (unchanged)
 // ============================
 app.post("/ask", async (req, res) => {
   try {
@@ -339,7 +491,7 @@ app.post("/ask", async (req, res) => {
 // Health check
 app.get("/", (req, res) =>
   res.send(
-    "AI Backend v17 (Ultra mode, mobile‑only, precise edits) is running.",
+    "AI Backend v18 (validated, retry‑enforced game generation) is running.",
   ),
 );
 
