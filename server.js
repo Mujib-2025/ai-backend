@@ -26,7 +26,7 @@ const client = new OpenAI({
   },
 });
 
-// --------------- Mobile‑game template (cost‑optimised) ---------------
+// --------------- Mobile‑game template ---------------
 function getGameTemplate(script) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -56,33 +56,54 @@ ${script}
 </html>`;
 }
 
-// --------------- Extract JSON ---------------
+// --------------- Extract JSON (handles truncated) ---------------
 function extractJSON(text) {
+  // Direct parse
   try {
     return JSON.parse(text);
   } catch (e) {}
+
+  // Remove code fences
   let cleaned = text
     .replace(/```json\s*([\s\S]*?)\s*```/g, "$1")
     .replace(/```\s*([\s\S]*?)\s*```/g, "$1")
     .trim();
+
+  // Find first { and last }
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start !== -1 && end !== -1 && end > start) {
-    cleaned = cleaned.substring(start, end + 1);
+    let attempt = cleaned.substring(start, end + 1);
     try {
-      return JSON.parse(cleaned);
+      return JSON.parse(attempt);
     } catch (e2) {
+      // If truncated, try to complete the JSON by adding missing closing brackets
+      let fixed = attempt;
+      // Count open/close braces and add missing ones
+      let openBraces = 0,
+        closeBraces = 0;
+      for (let ch of fixed) {
+        if (ch === "{") openBraces++;
+        if (ch === "}") closeBraces++;
+      }
+      for (let i = 0; i < openBraces - closeBraces; i++) {
+        fixed += "}";
+      }
       try {
-        return JSON.parse(cleaned.replace(/'/g, '"'));
+        return JSON.parse(fixed);
       } catch (e3) {
-        return null;
+        try {
+          return JSON.parse(attempt.replace(/'/g, '"'));
+        } catch (e4) {
+          return null;
+        }
       }
     }
   }
   return null;
 }
 
-// --------------- Validate JS‑only code (no full HTML) ---------------
+// --------------- Validate JS‑only code ---------------
 function validateGameScript(script, userMessage) {
   const errors = [];
   if (!script || typeof script !== "string" || script.trim().length === 0) {
@@ -98,7 +119,6 @@ function validateGameScript(script, userMessage) {
     lowerMsg.includes("snake") ||
     lowerMsg.includes("puzzle");
 
-  // ABSOLUTE: no keyboard
   if (/\bkeydown\b|\bkeyup\b|\bkeypress\b|\bkeyboard\b/i.test(script)) {
     errors.push("Keyboard controls detected – remove all keyboard events.");
   }
@@ -137,7 +157,7 @@ function validateGameScript(script, userMessage) {
   return errors;
 }
 
-// --------------- System prompt (ultra‑compact) ---------------
+// --------------- System prompt (compact, JSON‑focused) ---------------
 function buildSystemPrompt(mode, sandboxHTML, userMessage) {
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -152,7 +172,7 @@ function buildSystemPrompt(mode, sandboxHTML, userMessage) {
     lowerMsg.includes("webgl");
 
   const touchRules = `ABSOLUTE RULES:
-- Touch controls ONLY (touchstart, touchend, click). NO keyboard events.
+- Touch controls ONLY (touchstart, touchend, click). NO keyboard.
 - No inline onclick, <input>, alert, prompt.
 - All buttons >=44px, use addEventListener.
 - All referenced functions must exist.`;
@@ -173,12 +193,14 @@ Make sure to:
 ${is3D ? '- Use Three.js ES module from "https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js".' : ""}
 ${isGame ? "- The game must be fully playable on load." : ""}
 
-Output ONLY a JSON object (no markdown, no explanation) with exactly two fields:
-- "script": the JavaScript code as a string
+**Your response MUST be a valid JSON object with exactly these two fields:**
+- "script": a string containing the JavaScript code
 - "description": a one‑sentence summary
 
+Do NOT include any markdown, code fences, or extra text. Start your response with { and end with }.
+
 Example:
-{ "script": "/* your code */", "description": "A flappy bird clone." }`;
+{"script":"// your code","description":"A flappy bird game."}`;
   } else {
     return `You are a front‑end expert. Modify the current sandbox page precisely.
 Current page:
@@ -186,15 +208,26 @@ Current page:
 ${sandboxHTML || "(empty)"}
 \`\`\`
 Rules: Use 'doc' for all DOM access (it is already provided). Only return JavaScript code.
-Output ONLY this JSON (no markdown):
-{
-  "code": "your JavaScript code",
-  "description": "brief summary of changes"
-}`;
+**Output a JSON object only:**
+{ "code": "your JavaScript code", "description": "brief summary of changes" }`;
   }
 }
 
-// --------------- AI call with retry ---------------
+// --------------- Edit validation ---------------
+function validateGeneratedCode_for_edit(code) {
+  const errors = [];
+  if (!code || typeof code !== "string" || code.trim().length === 0) {
+    errors.push("Empty code");
+    return errors;
+  }
+  if (/\bdocument\./.test(code))
+    errors.push("Uses 'document' instead of 'doc'.");
+  if (code.includes("<!DOCTYPE") || code.includes("<html"))
+    errors.push("Full HTML detected – only JavaScript expected.");
+  return errors;
+}
+
+// --------------- Core AI call with retry ---------------
 async function generateWithRetry(
   messages,
   mode,
@@ -216,33 +249,32 @@ async function generateWithRetry(
         ...currentMessages,
       ],
       temperature: 0.0,
-      max_tokens: mode === "generate" ? 2500 : 2500, // increased generate cap to 2500
+      max_tokens: mode === "generate" ? 3500 : 2500, // raised to 3500
       response_format: { type: "json_object" },
     });
 
     const text = completion.choices[0].message.content;
+    console.log(`Raw response (first 200 chars): ${text.slice(0, 200)}`);
+
     const parsed = extractJSON(text);
 
     if (parsed && typeof parsed.description === "string") {
-      // Accept both "script" and "code" fields for generate mode
       let codeField =
-        mode === "generate"
-          ? parsed.script || parsed.code // fallback to "code" if "script" missing
-          : parsed.code;
+        mode === "generate" ? parsed.script || parsed.code : parsed.code;
 
       if (typeof codeField !== "string") {
-        console.log(`Attempt ${attempt + 1} missing code/script field`);
+        console.log(`Missing code/script field`);
         if (attempt < maxRetries) {
           currentMessages.push({
             role: "user",
             content:
-              "Your JSON must have a 'script' (for generate) or 'code' (for edit) field.",
+              "Your JSON must contain a 'script' field (for generate) or 'code' field (for edit).",
           });
           continue;
         }
         return {
           code: null,
-          description: "Invalid JSON fields",
+          description: "Invalid JSON structure",
           model,
           attempts: attempt + 1,
         };
@@ -279,20 +311,18 @@ async function generateWithRetry(
         attempts: attempt + 1,
       };
     } else {
-      console.log(
-        `Attempt ${attempt + 1} failed JSON parsing, raw response:`,
-        text.slice(0, 200),
-      );
+      console.log("JSON parsing failed. Full response:", text.slice(0, 500));
+      // Last resort: try to extract code directly from the text
       if (attempt < maxRetries) {
         currentMessages.push({
           role: "user",
-          content: "Please return ONLY the JSON object as specified.",
+          content:
+            "Your response was not valid JSON. Please return ONLY the JSON object exactly as specified.",
         });
       } else {
-        // fallback extraction
         const jsMatch =
-          text.match(/```javascript\s*([\s\S]*?)\s*```/) ||
-          text.match(/```\s*([\s\S]*?)```/);
+          text.match(/```(?:javascript|js|html)?\s*([\s\S]*?)\s*```/) ||
+          text.match(/`([^`]*)`/);
         if (jsMatch) {
           return {
             code: jsMatch[1].trim(),
@@ -303,7 +333,7 @@ async function generateWithRetry(
         }
         return {
           code: null,
-          description: "Failed to parse JSON.",
+          description: "Failed to parse JSON after all attempts.",
           model,
           attempts: attempt + 1,
         };
@@ -318,22 +348,8 @@ async function generateWithRetry(
   };
 }
 
-// Edit validation (unchanged logic, adjusted for JS only)
-function validateGeneratedCode_for_edit(code) {
-  const errors = [];
-  if (!code || typeof code !== "string" || code.trim().length === 0) {
-    errors.push("Empty code");
-    return errors;
-  }
-  if (/\bdocument\./.test(code))
-    errors.push("Uses 'document' instead of 'doc'.");
-  if (code.includes("<!DOCTYPE") || code.includes("<html"))
-    errors.push("Full HTML detected – only JavaScript expected.");
-  return errors;
-}
-
 // ============================
-//  POST /chat – Non‑streaming
+//  POST /chat – non‑streaming
 // ============================
 app.post("/chat", async (req, res) => {
   try {
@@ -369,7 +385,7 @@ app.post("/chat", async (req, res) => {
 });
 
 // ============================
-//  POST /chat/stream – Streaming (Pro only, template injection)
+//  POST /chat/stream – Streaming
 // ============================
 app.post("/chat/stream", async (req, res) => {
   try {
@@ -411,6 +427,7 @@ app.post("/chat/stream", async (req, res) => {
       );
       res.end();
     } else {
+      // Edit mode – stream the raw output
       const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
       const stream = await client.chat.completions.create({
         model,
@@ -429,6 +446,7 @@ app.post("/chat/stream", async (req, res) => {
         }
       }
 
+      // After stream, try to parse and maybe retry
       const parsed = extractJSON(fullContent);
       let code = null,
         description = "",
@@ -440,7 +458,7 @@ app.post("/chat/stream", async (req, res) => {
         typeof parsed.description === "string"
       ) {
         const errors = validateGeneratedCode_for_edit(parsed.code);
-        if (errors.length === 0) {
+        if (!errors.length) {
           code = parsed.code;
           description = parsed.description;
         } else {
@@ -506,7 +524,7 @@ app.post("/chat/stream", async (req, res) => {
 });
 
 // ============================
-//  POST /ask – assistant (unchanged, lightweight)
+//  POST /ask – assistant
 // ============================
 app.post("/ask", async (req, res) => {
   try {
