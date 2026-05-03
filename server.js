@@ -112,7 +112,6 @@ function validateGameScript(script, userMessage) {
     )
       errors.push("Missing game loop (requestAnimationFrame or setInterval).");
     if (!lower.includes("score")) errors.push("No score variable found.");
-    // Must use the provided restart button or define its own restart logic
     if (!lower.includes("restartbtn") && !lower.includes("restart"))
       errors.push(
         "No restart mechanism – the template provides #restartBtn, please use it.",
@@ -123,7 +122,6 @@ function validateGameScript(script, userMessage) {
       !lower.includes("click")
     )
       errors.push("No touch/click event listeners.");
-    // Ensure referenced functions exist
     const funcDefs = script.match(/function\s+(\w+)/g) || [];
     const definedFuncs = new Set(
       funcDefs.map((f) => f.replace("function ", "")),
@@ -175,11 +173,12 @@ Make sure to:
 ${is3D ? '- Use Three.js ES module from "https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js".' : ""}
 ${isGame ? "- The game must be fully playable on load." : ""}
 
-Output ONLY this JSON (no markdown):
-{
-  "script": "your JavaScript code",
-  "description": "one-sentence summary"
-}`;
+Output ONLY a JSON object (no markdown, no explanation) with exactly two fields:
+- "script": the JavaScript code as a string
+- "description": a one‑sentence summary
+
+Example:
+{ "script": "/* your code */", "description": "A flappy bird clone." }`;
   } else {
     return `You are a front‑end expert. Modify the current sandbox page precisely.
 Current page:
@@ -217,7 +216,7 @@ async function generateWithRetry(
         ...currentMessages,
       ],
       temperature: 0.0,
-      max_tokens: mode === "generate" ? 1500 : 2500, // generate → only JS; edit → reduced
+      max_tokens: mode === "generate" ? 2500 : 2500, // increased generate cap to 2500
       response_format: { type: "json_object" },
     });
 
@@ -225,7 +224,12 @@ async function generateWithRetry(
     const parsed = extractJSON(text);
 
     if (parsed && typeof parsed.description === "string") {
-      let codeField = mode === "generate" ? parsed.script : parsed.code;
+      // Accept both "script" and "code" fields for generate mode
+      let codeField =
+        mode === "generate"
+          ? parsed.script || parsed.code // fallback to "code" if "script" missing
+          : parsed.code;
+
       if (typeof codeField !== "string") {
         console.log(`Attempt ${attempt + 1} missing code/script field`);
         if (attempt < maxRetries) {
@@ -247,7 +251,7 @@ async function generateWithRetry(
       const errors =
         mode === "generate"
           ? validateGameScript(codeField, userMessage)
-          : validateGeneratedCode_for_edit(codeField); // we reuse the old edit validation
+          : validateGeneratedCode_for_edit(codeField);
       if (errors.length === 0) {
         return {
           code: codeField,
@@ -268,7 +272,6 @@ async function generateWithRetry(
         currentMessages.push({ role: "user", content: correction });
         continue;
       }
-      // final attempt – return with warnings
       return {
         code: codeField,
         description: `⚠️ ${parsed.description} (issues: ${errors.join("; ")})`,
@@ -276,7 +279,10 @@ async function generateWithRetry(
         attempts: attempt + 1,
       };
     } else {
-      console.log(`Attempt ${attempt + 1} failed JSON parsing`);
+      console.log(
+        `Attempt ${attempt + 1} failed JSON parsing, raw response:`,
+        text.slice(0, 200),
+      );
       if (attempt < maxRetries) {
         currentMessages.push({
           role: "user",
@@ -350,7 +356,6 @@ app.post("/chat", async (req, res) => {
       ` | ✅ ${result.model}, Attempts: ${result.attempts}`;
 
     if (mode === "generate" && finalCode) {
-      // Inject the JavaScript into the template
       finalCode = getGameTemplate(finalCode);
     }
 
@@ -381,7 +386,6 @@ app.post("/chat/stream", async (req, res) => {
     res.setHeader("X-Accel-Buffering", "no");
 
     if (mode === "generate") {
-      // Stream a progress message, then inject template
       console.log(`Streaming generate using ${model}`);
       res.write(
         `data: ${JSON.stringify({ delta: "🎮 Crafting your game…" })}\n\n`,
@@ -407,7 +411,6 @@ app.post("/chat/stream", async (req, res) => {
       );
       res.end();
     } else {
-      // Edit mode – stream AI output like before
       const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
       const stream = await client.chat.completions.create({
         model,
