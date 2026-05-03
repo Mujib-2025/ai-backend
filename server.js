@@ -163,7 +163,7 @@ function validateGeneratedCode(code, userMessage, mode) {
   return errors;
 }
 
-// --------------- System Prompt (Stronger touch‑only focus) ---------------
+// --------------- System Prompt (CONDENSED, same strict rules) ---------------
 function buildSystemPrompt(mode, sandboxHTML, userMessage) {
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -172,105 +172,53 @@ function buildSystemPrompt(mode, sandboxHTML, userMessage) {
     lowerMsg.includes("tic") ||
     lowerMsg.includes("snake") ||
     lowerMsg.includes("puzzle");
-
   const is3D =
     lowerMsg.includes("3d") ||
     lowerMsg.includes("three.js") ||
-    lowerMsg.includes("threejs") ||
-    lowerMsg.includes("webgl") ||
-    lowerMsg.includes("3d game");
+    lowerMsg.includes("webgl");
 
-  const mandatoryRules = `
-**MANDATORY RULES – if you break any of these your output is invalid:**
-
-1. NO inline onclick attributes. Use addEventListener in a single <script> at end of <body>.
-2. NO <input>, <textarea>, contenteditable.
-3. NO alert(), prompt(), confirm(), document.write().
-4. Do NOT call .focus() or use autofocus.
-5. Every button MUST perform a visible action.
-6. ALL functions referenced MUST be defined.
-7. No placeholder code, no TODOs, no comments like "implement later".
-
-8. **ABSOLUTELY NO KEYBOARD CONTROLS:** This is a mobile‑only game. Do NOT use keydown, keyup, keypress, or any keyboard events. Only touch and mouse click events are allowed.
-
-9. **MOBILE TOUCH CONTROLS ONLY:** All player interaction must be via touch (touchstart, touchend) or click. Use event listeners for these. Do not mention keyboard controls anywhere in the code.
-
-10. **FULL GAME REQUIREMENT (TOP PRIORITY):**
-If this is a game, you MUST include:
-- Start state
-- Game loop (update + render using requestAnimationFrame)
-- Player interaction (touch – use touchstart/touchend or click)
-- Game logic (movement, rules, collisions)
-- Score system (visible and updating)
-- Win OR lose condition
-- Restart button that fully resets the game (visible in HTML, calls a function that resets all variables, score, canvas, intervals)
-
-11. The game must be immediately playable on load.
-
-12. **CORE MECHANIC REQUIREMENT:**
-The main mechanic MUST be implemented and visible. It must update over time and affect game state (position, score, objects). No fake UI.
-
-13. **STATE DRIVEN LOGIC:** All core behavior must be driven by real state variables that change during execution.
-
-14. If using external libraries (like Three.js), use ES modules and <script type="module">.
-
-15. **STRICT MOBILE VERTICAL RECTANGLE:** Portrait, flex column, no horizontal scroll. Use touch-action: manipulation; user-select: none; on interactive elements. Buttons ≥ 44px tap target.
+  const touchOnly = `
+**MANDATORY TOUCH‑ONLY RULES (violations = invalid):**
+- NO keyboard events (keydown, keyup, keypress). Only touchstart, touchend, click.
+- NO inline onclick, <input>, textarea, contenteditable, alert(), prompt(), document.write().
+- NO autofocus or .focus().
+- All buttons ≥44px tap target, use addEventListener, perform visible action.
+- Every function referenced from event listeners MUST exist.
+- Images: absolute HTTPS URLs only (picsum.photos or source.unsplash.com).
+- Mobile portrait, flex column, no horizontal scroll. touch-action:manipulation; user-select:none.
 `;
 
-  const layout = `Mobile layout: Portrait, no horizontal scroll, use flex column. Keep all content inside a vertical rectangle. Use relative units.`;
-
-  const gameExtra = isGame
-    ? `This is a COMPLETE MOBILE GAME WITH TOUCH CONTROLS ONLY. No keyboard. Must be fully playable, with score, win/lose, restart.`
-    : `This is a mobile website. Include header, main content, footer.`;
-
-  const qualityText = `ULTRA QUALITY: Write complete, production‑ready code. Every feature fully implemented.`;
-
-  const mobileSizing = isGame
-    ? `Mobile game sizing: Use relative units, design for 9:16.`
+  const gameSection = isGame
+    ? `
+**GAME REQUIREMENTS (complete, playable on load):**
+- Fully implemented game with start state, requestAnimationFrame loop, score display, win/lose condition, and touch controls.
+- Visible restart button that completely resets all variables, score, canvas, intervals.
+- Game logic, movement, collisions, core mechanic all working.
+${is3D ? '- 3D: use Three.js ES module from "https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js".' : ""}
+`
     : "";
 
-  const threeD = is3D
-    ? `3D game (Three.js): Use ES modules, import from 'https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js'. Mobile touch only. No keyboard.`
-    : "";
+  if (mode === "generate") {
+    return `You are an expert mobile game developer. Write a complete, self-contained HTML game.
+${touchOnly}
+${gameSection}
+Layout: Portrait, relative units, no horizontal overflow.
 
-  const imageRules = `Images: Always use absolute HTTPS URLs (https://picsum.photos/400/300 or https://source.unsplash.com/featured/?{topic}). Never local paths.`;
-
-  const generateEnding = `**Output format:** ONLY a JSON object: { "code": "<full HTML>", "description": "one-sentence summary" }
-
-CRITICAL: The game must be error-free, touch‑only, with working buttons, score update, win/lose, and a visible restart button. No keyboard events.
-
-Your entire message must start with { and end with }. No markdown or explanation.`;
-
-  const editEnding = `**How your code is executed:**
-\`\`\`
-new Function("sandbox", "doc", yourCode)(sandbox, doc);
-\`\`\`
-You DO NOT need to declare or compute \`doc\`. It is already available as a parameter.
-Just use \`doc\` directly for any DOM manipulation.
-
-Current sandbox content:
+**Output a JSON object only:**
+{ "code": "<full HTML>", "description": "one-sentence summary" }
+Start with { and end with }. No markdown.`;
+  } else {
+    return `You are an expert front‑end developer. Modify the existing sandbox page precisely.
+Current sandbox:
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
-
-PRECISE EDIT MODE: Modify ONLY the specific part(s) requested. Return a JSON object with the modified JavaScript code and a brief summary.
-
-Output format: { "code": "your JavaScript code", "description": "brief summary" }
-Your entire message must start with { and end with }.`;
-
-  if (mode === "generate") {
-    return `You are an expert front‑end developer. Write a complete, self‑contained HTML page for a mobile portrait game with TOUCH CONTROLS ONLY. No keyboard.
-${mandatoryRules}
-${layout}
-${gameExtra}
-${qualityText}
-${mobileSizing}
-${threeD}
-${imageRules}
-${generateEnding}`;
-  } else {
-    return `You are an expert front‑end developer. Modify the existing sandbox page precisely as requested, using the provided \`doc\` variable.
-${editEnding}`;
+**Rules:**
+- Use 'doc' (already provided) for all DOM access. Never use 'document'.
+- Only return JavaScript code.
+**Output a JSON object only:**
+{ "code": "your JavaScript", "description": "brief summary" }
+Start with { and end with }.`;
   }
 }
 
@@ -296,7 +244,7 @@ async function generateWithRetry(
         ...currentMessages,
       ],
       temperature: 0.0,
-      max_tokens: mode === "generate" ? 10000 : 4000,
+      max_tokens: mode === "generate" ? 8000 : 2500, // reduced caps
       response_format: { type: "json_object" },
     });
 
@@ -326,7 +274,8 @@ async function generateWithRetry(
       if (attempt < maxRetries) {
         let correction = `Your previous output was invalid. Issues: ${errors.join("; ")}.`;
         if (mode === "edit") {
-          correction += " Remember: use 'doc' instead of 'document'.";
+          correction +=
+            " Remember: use 'doc' instead of 'document'." + userMessage;
         } else {
           correction +=
             " Fix ALL of them. Use ONLY touch and click events, no keyboard. Ensure restart button exists and resets the game.";
@@ -434,7 +383,6 @@ app.post("/chat/stream", async (req, res) => {
     }
 
     const userMessage = messages[messages.length - 1]?.content || "";
-    const maxTokens = mode === "generate" ? 10000 : 4000;
     const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
     const model = "deepseek/deepseek-v4-pro";
 
@@ -449,7 +397,7 @@ app.post("/chat/stream", async (req, res) => {
       model,
       messages: [{ role: "system", content: systemContent }, ...messages],
       temperature: 0.0,
-      max_tokens: maxTokens,
+      max_tokens: mode === "generate" ? 8000 : 2500, // reduced caps for stream too
       stream: true,
     });
 
@@ -499,8 +447,8 @@ app.post("/chat/stream", async (req, res) => {
           mode,
           sandboxHTML,
           userMessage,
-          0,
-        ); // allow only 1 more attempt (since we already used one)
+          0, // only one more attempt (total max 2 steps)
+        );
         code = result.code || parsed.code;
         description = result.description;
         attemptsUsed = 1 + (result.attempts || 1);
@@ -578,7 +526,9 @@ app.post("/ask", async (req, res) => {
 
 // Health check
 app.get("/", (req, res) =>
-  res.send("AI Backend v25 (Pro only, 2 attempts max) is running."),
+  res.send(
+    "AI Backend v25 (Pro only, 2 attempts max, cost‑optimized) is running.",
+  ),
 );
 
 const PORT = process.env.PORT || 3000;
