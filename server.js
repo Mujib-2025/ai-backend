@@ -1,4 +1,4 @@
-// server.js – AI Builder Ultra (Pro model, template injection, 90 % cost reduction)
+// server.js – Mobile‑only AI backend (Pro model only, 2 attempts max, touch‑only enforcement)
 const express = require("express");
 const cors = require("cors");
 const OpenAI = require("openai");
@@ -22,142 +22,148 @@ const client = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY || "missing-api-key",
   defaultHeaders: {
     "HTTP-Referer": process.env.REFERER_URL || "http://localhost:3000",
-    "X-Title": "AI Builder Ultra",
+    "X-Title": "AI Builder",
   },
 });
 
-// --------------- Mobile‑game template ---------------
-function getGameTemplate(script) {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, touch-action: manipulation">
-<title>Game</title>
-<style>
-* { margin:0; padding:0; box-sizing:border-box; }
-html, body { width:100%; height:100%; overflow:hidden; background:#000; touch-action: none; }
-#gameContainer { width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; position:relative; }
-#score { color:white; font-size:20px; position:absolute; top:10px; left:10px; z-index:10; font-family:Arial,sans-serif; }
-#restartBtn { position:absolute; bottom:20px; right:20px; z-index:10; padding:12px 24px; font-size:16px; background:#ff4757; color:white; border:none; border-radius:8px; cursor:pointer; }
-canvas { display:block; }
-</style>
-</head>
-<body>
-<div id="gameContainer">
-  <div id="score">Score: 0</div>
-  <canvas id="gameCanvas"></canvas>
-  <button id="restartBtn">Restart</button>
-</div>
-<script>
-${script}
-</script>
-</body>
-</html>`;
-}
-
-// --------------- Extract JSON (handles truncated) ---------------
+// --------------- Extract JSON (strict) ---------------
 function extractJSON(text) {
-  // Direct parse
   try {
     return JSON.parse(text);
-  } catch (e) {}
-
-  // Remove code fences
-  let cleaned = text
-    .replace(/```json\s*([\s\S]*?)\s*```/g, "$1")
-    .replace(/```\s*([\s\S]*?)\s*```/g, "$1")
-    .trim();
-
-  // Find first { and last }
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start !== -1 && end !== -1 && end > start) {
-    let attempt = cleaned.substring(start, end + 1);
-    try {
-      return JSON.parse(attempt);
-    } catch (e2) {
-      // If truncated, try to complete the JSON by adding missing closing brackets
-      let fixed = attempt;
-      // Count open/close braces and add missing ones
-      let openBraces = 0,
-        closeBraces = 0;
-      for (let ch of fixed) {
-        if (ch === "{") openBraces++;
-        if (ch === "}") closeBraces++;
-      }
-      for (let i = 0; i < openBraces - closeBraces; i++) {
-        fixed += "}";
-      }
+  } catch (e) {
+    let cleaned = text
+      .replace(/```json\s*([\s\S]*?)\s*```/g, "$1")
+      .replace(/```html\s*([\s\S]*?)\s*```/g, "$1")
+      .replace(/```javascript\s*([\s\S]*?)\s*```/g, "$1")
+      .replace(/```\s*([\s\S]*?)\s*```/g, "$1")
+      .trim();
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start !== -1 && end !== -1 && end > start) {
+      cleaned = cleaned.substring(start, end + 1);
       try {
-        return JSON.parse(fixed);
-      } catch (e3) {
+        return JSON.parse(cleaned);
+      } catch (e2) {
         try {
-          return JSON.parse(attempt.replace(/'/g, '"'));
-        } catch (e4) {
+          return JSON.parse(cleaned.replace(/'/g, '"'));
+        } catch (e3) {
           return null;
         }
       }
     }
+    return null;
   }
-  return null;
 }
 
-// --------------- Validate JS‑only code ---------------
-function validateGameScript(script, userMessage) {
+// --------------- Validate generated code (stricter touch‑only enforcement) ---------------
+function validateGeneratedCode(code, userMessage, mode) {
   const errors = [];
-  if (!script || typeof script !== "string" || script.trim().length === 0) {
-    errors.push("Empty script");
+
+  if (!code || typeof code !== "string" || code.trim().length === 0) {
+    errors.push("Empty or missing code");
     return errors;
   }
-  const lower = script.toLowerCase();
-  const lowerMsg = (userMessage || "").toLowerCase();
-  const isGame =
-    lowerMsg.includes("game") ||
-    lowerMsg.includes("play") ||
-    lowerMsg.includes("tic") ||
-    lowerMsg.includes("snake") ||
-    lowerMsg.includes("puzzle");
 
-  if (/\bkeydown\b|\bkeyup\b|\bkeypress\b|\bkeyboard\b/i.test(script)) {
-    errors.push("Keyboard controls detected – remove all keyboard events.");
-  }
+  if (mode === "generate") {
+    const lower = code.toLowerCase();
+    const lowerMsg = (userMessage || "").toLowerCase();
+    const isGame =
+      lowerMsg.includes("game") ||
+      lowerMsg.includes("play") ||
+      lowerMsg.includes("tic") ||
+      lowerMsg.includes("snake") ||
+      lowerMsg.includes("puzzle");
 
-  if (isGame) {
-    if (!lower.includes("addeventlistener"))
-      errors.push("No addEventListener – game won't respond to touch.");
-    if (
-      !lower.includes("requestanimationframe") &&
-      !lower.includes("setinterval")
-    )
-      errors.push("Missing game loop (requestAnimationFrame or setInterval).");
-    if (!lower.includes("score")) errors.push("No score variable found.");
-    if (!lower.includes("restartbtn") && !lower.includes("restart"))
+    if (!lower.includes("<!doctype")) errors.push("Missing DOCTYPE");
+    if (!lower.includes("<script")) errors.push("Missing <script> tag");
+
+    // ABSOLUTE RULE: NO KEYBOARD
+    if (/\bkeydown\b|\bkeyup\b|\bkeypress\b|\bkeyboard\b/i.test(code)) {
       errors.push(
-        "No restart mechanism – the template provides #restartBtn, please use it.",
+        "Keyboard controls detected – touch‑only mobile required. Remove all keyboard event listeners.",
       );
-    if (
-      !lower.includes("touchstart") &&
-      !lower.includes("touchend") &&
-      !lower.includes("click")
-    )
-      errors.push("No touch/click event listeners.");
-    const funcDefs = script.match(/function\s+(\w+)/g) || [];
-    const definedFuncs = new Set(
-      funcDefs.map((f) => f.replace("function ", "")),
-    );
-    const eventRegex =
-      /addEventListener\s*\(\s*['"](?:click|touchstart|touchend)['"]\s*,\s*(\w+)/g;
-    let m;
-    while ((m = eventRegex.exec(script)) !== null) {
-      if (!definedFuncs.has(m[1]) && m[1] !== "null" && m[1] !== "function")
-        errors.push(`Event listener references undefined function '${m[1]}'.`);
+    }
+
+    if (isGame) {
+      if (!lower.includes("addeventlistener"))
+        errors.push(
+          "No addEventListener – interactive elements will not work on mobile",
+        );
+      if (
+        !lower.includes("requestanimationframe") &&
+        !lower.includes("setinterval")
+      )
+        errors.push("No game loop (requestAnimationFrame or setInterval)");
+      if (!lower.includes("restart") && !lower.includes("reset"))
+        errors.push("No restart/reset functionality");
+      if (!lower.includes("score")) errors.push("No score variable or display");
+      const functionMatches = code.match(/function\s+\w+/g);
+      if (!functionMatches || functionMatches.length < 2)
+        errors.push("Fewer than 2 functions – game logic may be incomplete");
+      if (
+        !lower.includes("touchstart") &&
+        !lower.includes("touchend") &&
+        !lower.includes("click")
+      )
+        errors.push(
+          "No touch/click event handlers – buttons won't work on mobile",
+        );
+
+      // Restart button visible in HTML
+      const restartBtnRegex =
+        /<button[^>]*>[\s\S]*?(?:restart|reset)[\s\S]*?<\/button>/i;
+      if (!restartBtnRegex.test(code)) {
+        errors.push("No visible restart/reset button found in HTML");
+      }
+
+      // Restart function that resets game state
+      const restartLogicIndicators =
+        /\bscore\s*=\s*0\b|\bresetGame\b|\bclearInterval\b|\bcancelAnimationFrame\b|\bctx\.clearRect\b|\bgameOver\s*=\s*false\b/i;
+      if (
+        !/function\s+(restart|reset)\s*\(\)/i.test(code) &&
+        !restartLogicIndicators.test(code)
+      ) {
+        errors.push("No restart/reset function that resets game state");
+      }
+
+      // Event listeners must reference defined functions
+      const eventListenerRegex =
+        /addEventListener\s*\(\s*['"](?:click|touchstart|touchend)['"]\s*,\s*(\w+)/g;
+      let match;
+      const usedFunctions = new Set();
+      while ((match = eventListenerRegex.exec(code)) !== null) {
+        usedFunctions.add(match[1]);
+      }
+      for (const funcName of usedFunctions) {
+        const funcDefRegex = new RegExp(`function\\s+${funcName}\\s*\\(`);
+        if (
+          !funcDefRegex.test(code) &&
+          funcName !== "function" &&
+          funcName !== "null"
+        ) {
+          errors.push(
+            `Event listener references function '${funcName}' which is not defined`,
+          );
+        }
+      }
+    }
+  } else {
+    if (/\bdocument\./.test(code)) {
+      errors.push(
+        "Uses 'document' instead of 'doc'. All DOM access must go through 'doc'.",
+      );
+    }
+    if (code.includes("<!DOCTYPE") || code.includes("<html")) {
+      errors.push(
+        "Edit code appears to be full HTML – only JavaScript is expected.",
+      );
     }
   }
+
   return errors;
 }
 
-// --------------- System prompt (compact, JSON‑focused) ---------------
+// --------------- System Prompt (CONDENSED, same strict rules) ---------------
 function buildSystemPrompt(mode, sandboxHTML, userMessage) {
   const lowerMsg = (userMessage || "").toLowerCase();
   const isGame =
@@ -171,63 +177,52 @@ function buildSystemPrompt(mode, sandboxHTML, userMessage) {
     lowerMsg.includes("three.js") ||
     lowerMsg.includes("webgl");
 
-  const touchRules = `ABSOLUTE RULES:
-- Touch controls ONLY (touchstart, touchend, click). NO keyboard.
-- No inline onclick, <input>, alert, prompt.
-- All buttons >=44px, use addEventListener.
-- All referenced functions must exist.`;
+  const touchOnly = `
+**MANDATORY TOUCH‑ONLY RULES (violations = invalid):**
+- NO keyboard events (keydown, keyup, keypress). Only touchstart, touchend, click.
+- NO inline onclick, <input>, textarea, contenteditable, alert(), prompt(), document.write().
+- NO autofocus or .focus().
+- All buttons ≥44px tap target, use addEventListener, perform visible action.
+- Every function referenced from event listeners MUST exist.
+- Images: absolute HTTPS URLs only (picsum.photos or source.unsplash.com).
+- Mobile portrait, flex column, no horizontal scroll. touch-action:manipulation; user-select:none.
+`;
+
+  const gameSection = isGame
+    ? `
+**GAME REQUIREMENTS (complete, playable on load):**
+- Fully implemented game with start state, requestAnimationFrame loop, score display, win/lose condition, and touch controls.
+- Visible restart button that completely resets all variables, score, canvas, intervals.
+- Game logic, movement, collisions, core mechanic all working.
+${is3D ? '- 3D: use Three.js ES module from "https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js".' : ""}
+`
+    : "";
 
   if (mode === "generate") {
-    return `You are a master mobile game developer. You are given a ready‑made HTML template that already contains:
-- A full‑screen canvas (id="gameCanvas")
-- A score display (id="score")
-- A restart button (id="restartBtn")
+    return `You are an expert mobile game developer. Write a complete, self-contained HTML game.
+${touchOnly}
+${gameSection}
+Layout: Portrait, relative units, no horizontal overflow.
 
-Write ONLY the JavaScript code that makes the game work. The code will be injected into <script> at the end of the body.
-${touchRules}
-Make sure to:
-- Use requestAnimationFrame for the game loop.
-- Define a function that resets the entire game and bind it to #restartBtn.
-- Include scoring, win/lose condition.
-- Touch controls only.
-${is3D ? '- Use Three.js ES module from "https://cdn.jsdelivr.net/npm/three@0.156.1/build/three.module.js".' : ""}
-${isGame ? "- The game must be fully playable on load." : ""}
-
-**Your response MUST be a valid JSON object with exactly these two fields:**
-- "script": a string containing the JavaScript code
-- "description": a one‑sentence summary
-
-Do NOT include any markdown, code fences, or extra text. Start your response with { and end with }.
-
-Example:
-{"script":"// your code","description":"A flappy bird game."}`;
+**Output a JSON object only:**
+{ "code": "<full HTML>", "description": "one-sentence summary" }
+Start with { and end with }. No markdown.`;
   } else {
-    return `You are a front‑end expert. Modify the current sandbox page precisely.
-Current page:
+    return `You are an expert front‑end developer. Modify the existing sandbox page precisely.
+Current sandbox:
 \`\`\`html
 ${sandboxHTML || "(empty)"}
 \`\`\`
-Rules: Use 'doc' for all DOM access (it is already provided). Only return JavaScript code.
+**Rules:**
+- Use 'doc' (already provided) for all DOM access. Never use 'document'.
+- Only return JavaScript code.
 **Output a JSON object only:**
-{ "code": "your JavaScript code", "description": "brief summary of changes" }`;
+{ "code": "your JavaScript", "description": "brief summary" }
+Start with { and end with }.`;
   }
 }
 
-// --------------- Edit validation ---------------
-function validateGeneratedCode_for_edit(code) {
-  const errors = [];
-  if (!code || typeof code !== "string" || code.trim().length === 0) {
-    errors.push("Empty code");
-    return errors;
-  }
-  if (/\bdocument\./.test(code))
-    errors.push("Uses 'document' instead of 'doc'.");
-  if (code.includes("<!DOCTYPE") || code.includes("<html"))
-    errors.push("Full HTML detected – only JavaScript expected.");
-  return errors;
-}
-
-// --------------- Core AI call with retry ---------------
+// --------------- Generate with Pro model, max 2 attempts ---------------
 async function generateWithRetry(
   messages,
   mode,
@@ -249,44 +244,22 @@ async function generateWithRetry(
         ...currentMessages,
       ],
       temperature: 0.0,
-      max_tokens: mode === "generate" ? 3500 : 2500, // raised to 3500
+      max_tokens: mode === "generate" ? 8000 : 2500, // reduced caps
       response_format: { type: "json_object" },
     });
 
     const text = completion.choices[0].message.content;
-    console.log(`Raw response (first 200 chars): ${text.slice(0, 200)}`);
-
     const parsed = extractJSON(text);
 
-    if (parsed && typeof parsed.description === "string") {
-      let codeField =
-        mode === "generate" ? parsed.script || parsed.code : parsed.code;
-
-      if (typeof codeField !== "string") {
-        console.log(`Missing code/script field`);
-        if (attempt < maxRetries) {
-          currentMessages.push({
-            role: "user",
-            content:
-              "Your JSON must contain a 'script' field (for generate) or 'code' field (for edit).",
-          });
-          continue;
-        }
-        return {
-          code: null,
-          description: "Invalid JSON structure",
-          model,
-          attempts: attempt + 1,
-        };
-      }
-
-      const errors =
-        mode === "generate"
-          ? validateGameScript(codeField, userMessage)
-          : validateGeneratedCode_for_edit(codeField);
+    if (
+      parsed &&
+      typeof parsed.code === "string" &&
+      typeof parsed.description === "string"
+    ) {
+      const errors = validateGeneratedCode(parsed.code, userMessage, mode);
       if (errors.length === 0) {
         return {
-          code: codeField,
+          code: parsed.code,
           description: parsed.description,
           model,
           attempts: attempt + 1,
@@ -294,52 +267,72 @@ async function generateWithRetry(
         };
       }
 
-      console.log(`Validation failed: ${errors.join("; ")}`);
+      console.log(
+        `Attempt ${attempt + 1} failed validation:`,
+        errors.join(", "),
+      );
       if (attempt < maxRetries) {
-        let correction = `Your previous output was invalid. ${errors.join("; ")}.`;
-        if (mode === "generate")
+        let correction = `Your previous output was invalid. Issues: ${errors.join("; ")}.`;
+        if (mode === "edit") {
           correction +=
-            " Use the provided template elements (canvas, score, restartBtn).";
-        else correction += " Remember: use 'doc' for all DOM operations.";
+            " Remember: use 'doc' instead of 'document'." + userMessage;
+        } else {
+          correction +=
+            " Fix ALL of them. Use ONLY touch and click events, no keyboard. Ensure restart button exists and resets the game.";
+        }
         currentMessages.push({ role: "user", content: correction });
-        continue;
+      } else {
+        // Max retries reached – return last code with warning
+        return {
+          code: parsed.code,
+          description: `⚠️ ${mode === "edit" ? "Edit" : "Game"} may be incomplete after ${attempt + 1} attempts. Issues: ${errors.join("; ")}`,
+          model,
+          attempts: attempt + 1,
+        };
       }
-      return {
-        code: codeField,
-        description: `⚠️ ${parsed.description} (issues: ${errors.join("; ")})`,
-        model,
-        attempts: attempt + 1,
-      };
     } else {
-      console.log("JSON parsing failed. Full response:", text.slice(0, 500));
-      // Last resort: try to extract code directly from the text
+      console.log(`Attempt ${attempt + 1} failed JSON parsing`);
       if (attempt < maxRetries) {
         currentMessages.push({
           role: "user",
           content:
-            "Your response was not valid JSON. Please return ONLY the JSON object exactly as specified.",
+            "Your output did not contain valid JSON with 'code' and 'description' fields. Please return ONLY the JSON object as specified.",
         });
       } else {
+        // Last resort fallback extraction
+        const codeMatch =
+          text.match(/```html\s*([\s\S]*?)\s*```/) ||
+          text.match(/<!DOCTYPE html[\s\S]*/i);
         const jsMatch =
-          text.match(/```(?:javascript|js|html)?\s*([\s\S]*?)\s*```/) ||
-          text.match(/`([^`]*)`/);
-        if (jsMatch) {
+          text.match(/```javascript\s*([\s\S]*?)\s*```/) ||
+          text.match(/```\s*([\s\S]*?)```/);
+        const fallbackCode =
+          mode === "edit"
+            ? jsMatch
+              ? jsMatch[1]
+              : null
+            : codeMatch
+              ? codeMatch[0]
+              : null;
+        if (fallbackCode) {
           return {
-            code: jsMatch[1].trim(),
-            description: "Extracted code from non‑JSON output.",
+            code: fallbackCode.trim(),
+            description:
+              "Extracted code from non‑JSON output (quality not guaranteed).",
             model,
             attempts: attempt + 1,
           };
         }
         return {
           code: null,
-          description: "Failed to parse JSON after all attempts.",
+          description: `Failed to produce valid JSON after ${attempt + 1} attempts.`,
           model,
           attempts: attempt + 1,
         };
       }
     }
   }
+
   return {
     code: null,
     description: "Generation failed.",
@@ -349,13 +342,14 @@ async function generateWithRetry(
 }
 
 // ============================
-//  POST /chat – non‑streaming
+//  POST /chat – Non‑streaming
 // ============================
 app.post("/chat", async (req, res) => {
   try {
     const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-    if (!messages || !Array.isArray(messages))
-      return res.status(400).json({ error: "messages required" });
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages array required" });
+    }
 
     const userMessage = messages[messages.length - 1]?.content || "";
     const result = await generateWithRetry(
@@ -366,16 +360,10 @@ app.post("/chat", async (req, res) => {
       1,
     );
 
-    let finalCode = result.code;
-    let finalDescription =
-      result.description +
-      ` | ✅ ${result.model}, Attempts: ${result.attempts}`;
+    const info = ` | ✅ Model: ${result.model}, Attempts: ${result.attempts}`;
+    const finalDescription = (result.description || "") + info;
 
-    if (mode === "generate" && finalCode) {
-      finalCode = getGameTemplate(finalCode);
-    }
-
-    res.json({ code: finalCode, description: finalDescription });
+    res.json({ code: result.code, description: finalDescription });
   } catch (err) {
     console.error("/chat error:", err);
     res
@@ -385,15 +373,17 @@ app.post("/chat", async (req, res) => {
 });
 
 // ============================
-//  POST /chat/stream – Streaming
+//  POST /chat/stream – Streaming (Pro only)
 // ============================
 app.post("/chat/stream", async (req, res) => {
   try {
     const { messages, mode = "edit", sandboxHTML = "" } = req.body;
-    if (!messages || !Array.isArray(messages))
-      return res.status(400).json({ error: "messages required" });
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages array required" });
+    }
 
     const userMessage = messages[messages.length - 1]?.content || "";
+    const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
     const model = "deepseek/deepseek-v4-pro";
 
     res.setHeader("Content-Type", "text/event-stream");
@@ -401,117 +391,101 @@ app.post("/chat/stream", async (req, res) => {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
 
-    if (mode === "generate") {
-      console.log(`Streaming generate using ${model}`);
-      res.write(
-        `data: ${JSON.stringify({ delta: "🎮 Crafting your game…" })}\n\n`,
-      );
+    // First attempt: streaming with Pro
+    console.log(`Streaming attempt 1 using ${model}`);
+    const stream = await client.chat.completions.create({
+      model,
+      messages: [{ role: "system", content: systemContent }, ...messages],
+      temperature: 0.0,
+      max_tokens: mode === "generate" ? 8000 : 2500, // reduced caps for stream too
+      stream: true,
+    });
 
-      const result = await generateWithRetry(
-        messages,
-        mode,
-        sandboxHTML,
-        userMessage,
-        1,
-      );
-      let finalCode = result.code;
-      let finalDescription =
-        result.description + ` | ✅ ${model}, Attempts: ${result.attempts}`;
-
-      if (finalCode) {
-        finalCode = getGameTemplate(finalCode);
+    let fullContent = "";
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content || "";
+      if (delta) {
+        fullContent += delta;
+        res.write(`data: ${JSON.stringify({ delta })}\n\n`);
       }
+    }
 
-      res.write(
-        `data: ${JSON.stringify({ done: true, code: finalCode, description: finalDescription })}\n\n`,
-      );
-      res.end();
-    } else {
-      // Edit mode – stream the raw output
-      const systemContent = buildSystemPrompt(mode, sandboxHTML, userMessage);
-      const stream = await client.chat.completions.create({
-        model,
-        messages: [{ role: "system", content: systemContent }, ...messages],
-        temperature: 0.0,
-        max_tokens: 2500,
-        stream: true,
-      });
+    let parsed = extractJSON(fullContent);
+    let code = null;
+    let description = "";
+    let attemptsUsed = 1;
 
-      let fullContent = "";
-      for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta?.content || "";
-        if (delta) {
-          fullContent += delta;
-          res.write(`data: ${JSON.stringify({ delta })}\n\n`);
-        }
-      }
-
-      // After stream, try to parse and maybe retry
-      const parsed = extractJSON(fullContent);
-      let code = null,
-        description = "",
-        attemptsUsed = 1;
-
-      if (
-        parsed &&
-        typeof parsed.code === "string" &&
-        typeof parsed.description === "string"
-      ) {
-        const errors = validateGeneratedCode_for_edit(parsed.code);
-        if (!errors.length) {
-          code = parsed.code;
-          description = parsed.description;
-        } else {
-          console.log("Edit stream validation failed, retrying…");
-          res.write(
-            `data: ${JSON.stringify({ delta: "⚠️ Fixing issues…" })}\n\n`,
-          );
-          const correction = `Previous output invalid: ${errors.join("; ")}. Remember to use 'doc'.`;
-          const retryMessages = [
-            ...messages,
-            { role: "user", content: correction },
-          ];
-          const result = await generateWithRetry(
-            retryMessages,
-            mode,
-            sandboxHTML,
-            userMessage,
-            0,
-          );
-          code = result.code || parsed.code;
-          description = result.description;
-          attemptsUsed = 1 + (result.attempts || 1);
-        }
+    if (
+      parsed &&
+      typeof parsed.code === "string" &&
+      typeof parsed.description === "string"
+    ) {
+      const errors = validateGeneratedCode(parsed.code, userMessage, mode);
+      if (errors.length === 0) {
+        code = parsed.code;
+        description = parsed.description;
       } else {
-        console.log("Edit stream JSON parse failed, retrying…");
+        console.log("Streaming result failed validation, retrying...");
         res.write(
-          `data: ${JSON.stringify({ delta: "⚠️ Fixing format…" })}\n\n`,
+          `data: ${JSON.stringify({ delta: "⚠️ Fixing issues..." })}\n\n`,
         );
+
+        let correction = `Your previous output was invalid. Issues: ${errors.join("; ")}.`;
+        if (mode === "edit") {
+          correction += " Remember to use 'doc' for all DOM operations.";
+        } else {
+          correction +=
+            " Fix all issues. Use touch controls only, no keyboard.";
+        }
         const retryMessages = [
           ...messages,
-          {
-            role: "user",
-            content: "Return only valid JSON with 'code' and 'description'.",
-          },
+          { role: "user", content: correction },
         ];
+
         const result = await generateWithRetry(
           retryMessages,
           mode,
           sandboxHTML,
           userMessage,
-          0,
+          0, // only one more attempt (total max 2 steps)
         );
-        code = result.code;
+        code = result.code || parsed.code;
         description = result.description;
         attemptsUsed = 1 + (result.attempts || 1);
       }
-
-      const info = ` | ✅ ${model}, Attempts: ${attemptsUsed}`;
+    } else {
+      console.log("Streaming JSON parse failed, retrying...");
       res.write(
-        `data: ${JSON.stringify({ done: true, code, description: description + info })}\n\n`,
+        `data: ${JSON.stringify({ delta: "⚠️ Fixing output format..." })}\n\n`,
       );
-      res.end();
+
+      const retryMessages = [
+        ...messages,
+        {
+          role: "user",
+          content:
+            "Your output did not contain valid JSON. Please return ONLY the JSON object as specified.",
+        },
+      ];
+      const result = await generateWithRetry(
+        retryMessages,
+        mode,
+        sandboxHTML,
+        userMessage,
+        0,
+      );
+      code = result.code;
+      description = result.description;
+      attemptsUsed = 1 + (result.attempts || 1);
     }
+
+    const info = ` | ✅ Model: ${model}, Attempts: ${attemptsUsed}`;
+    const finalDescription = (description || "") + info;
+
+    res.write(
+      `data: ${JSON.stringify({ done: true, code, description: finalDescription })}\n\n`,
+    );
+    res.end();
   } catch (err) {
     console.error("/chat/stream error:", err);
     if (res.headersSent) {
@@ -524,7 +498,7 @@ app.post("/chat/stream", async (req, res) => {
 });
 
 // ============================
-//  POST /ask – assistant
+//  POST /ask – Page assistant (unchanged)
 // ============================
 app.post("/ask", async (req, res) => {
   try {
@@ -533,14 +507,16 @@ app.post("/ask", async (req, res) => {
 
     const systemMessage = {
       role: "system",
-      content: `You are a helpful assistant. The user is viewing a mobile web page:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\nAnswer the question concisely. No code unless asked.`,
+      content: `You are a helpful assistant. The user is viewing a mobile web page:\n\`\`\`html\n${sandboxHTML || "(empty)"}\n\`\`\`\nAnswer the question about it concisely. No code unless asked.`,
     };
+
     const completion = await client.chat.completions.create({
       model: "deepseek/deepseek-v4-pro",
       messages: [systemMessage, { role: "user", content: question }],
       temperature: 0.7,
       max_tokens: 800,
     });
+
     res.json({ reply: completion.choices[0].message.content });
   } catch (err) {
     console.error("/ask error:", err);
@@ -550,8 +526,10 @@ app.post("/ask", async (req, res) => {
 
 // Health check
 app.get("/", (req, res) =>
-  res.send("AI Builder Ultra (cost‑optimised, template‑based) is running."),
+  res.send(
+    "AI Backend v25 (Pro only, 2 attempts max, cost‑optimized) is running.",
+  ),
 );
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`AI backend on port ${PORT}`));
+app.listen(PORT, () => console.log(`AI backend running on port ${PORT}`));
